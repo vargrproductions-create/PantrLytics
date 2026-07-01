@@ -1,5 +1,10 @@
 # PantrLytics Changelog
 
+## 2026.07.01
+
+### Bug Fixes
+- Allow non-admin Home Assistant users to see the PantrLytics ingress sidebar panel by setting `panel_admin: false` in the add-on manifest.
+
 ## 2026.04.02
 
 ### Features

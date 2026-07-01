@@ -1,6 +1,6 @@
 {
   "name": "PantrLytics",
-  "version": "2026.04.02",
+  "version": "2026.07.01",
   "image": "ghcr.io/Psychman52OS/pantrlytics:latest",
   "slug": "pantrlytics",
   "description": "Inventory database with on-demand label generation and IPP printing",
@@ -14,6 +14,7 @@
   "ingress": true,
   "ingress_entry": "/",
   "panel_icon": "mdi:barcode",
+  "panel_admin": false,
   "hassio_api": true,
   "homeassistant": "2024.1.0",
   "ports": {
