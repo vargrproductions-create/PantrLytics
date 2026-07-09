@@ -1,5 +1,10 @@
 # PantrLytics Changelog
 
+## 2026.07.09
+
+### Bug Fixes
+- **Mobile New Item dropdowns** — replaced unreliable native datalist-only option picking with a touch-friendly combobox for saved category, location, bin, and unit values.
+
 ## 2026.07.01
 
 ### Bug Fixes

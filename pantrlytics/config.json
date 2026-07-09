@@ -1,6 +1,6 @@
 {
   "name": "PantrLytics",
-  "version": "2026.07.01",
+  "version": "2026.07.09",
   "image": "ghcr.io/Psychman52OS/pantrlytics:latest",
   "slug": "pantrlytics",
   "description": "Inventory database with on-demand label generation and IPP printing",

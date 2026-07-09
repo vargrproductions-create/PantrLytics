@@ -129,6 +129,110 @@
   const dlg  = document.getElementById('app-modal');
   const body = document.getElementById('app-modal-body');
 
+  const escapeSelectorId = window.CSS?.escape || (value => value.replace(/[^a-zA-Z0-9_-]/g, '\\$&'));
+
+  function enhanceDatalistInputs(root = document) {
+    root.querySelectorAll('input[list]').forEach(input => {
+      if (!(input instanceof HTMLInputElement)) return;
+      if (input.dataset.mobileComboboxEnhanced === '1') return;
+
+      const listId = input.getAttribute('list');
+      const datalist = listId
+        ? root.querySelector?.(`#${escapeSelectorId(listId)}`) || document.getElementById(listId)
+        : null;
+      if (!datalist) return;
+
+      const values = Array.from(datalist.querySelectorAll('option'))
+        .map(option => option.value || option.textContent || '')
+        .map(value => value.trim())
+        .filter(Boolean)
+        .filter((value, index, all) => all.indexOf(value) === index);
+      if (!values.length) return;
+
+      input.dataset.mobileComboboxEnhanced = '1';
+      input.setAttribute('autocomplete', 'off');
+      input.setAttribute('role', 'combobox');
+      input.setAttribute('aria-expanded', 'false');
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'mobile-combobox';
+      input.parentNode.insertBefore(wrapper, input);
+      wrapper.appendChild(input);
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'mobile-combobox-toggle';
+      toggle.setAttribute('aria-label', 'Show existing options');
+      toggle.textContent = '▾';
+
+      const panel = document.createElement('div');
+      panel.className = 'mobile-combobox-panel';
+      panel.hidden = true;
+
+      wrapper.appendChild(toggle);
+      wrapper.appendChild(panel);
+
+      function filteredValues() {
+        const query = input.value.trim().toLowerCase();
+        if (!query) return values;
+        return values.filter(value => value.toLowerCase().includes(query));
+      }
+
+      function render() {
+        const matches = filteredValues();
+        panel.innerHTML = '';
+        if (!matches.length) {
+          const empty = document.createElement('div');
+          empty.className = 'mobile-combobox-empty';
+          empty.textContent = 'No saved options';
+          panel.appendChild(empty);
+          return;
+        }
+        matches.forEach(value => {
+          const option = document.createElement('button');
+          option.type = 'button';
+          option.className = 'mobile-combobox-option';
+          option.textContent = value;
+          option.addEventListener('pointerdown', event => event.preventDefault());
+          option.addEventListener('click', () => {
+            input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            close();
+            input.focus();
+          });
+          panel.appendChild(option);
+        });
+      }
+
+      function open() {
+        render();
+        panel.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+      }
+
+      function close() {
+        panel.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+      }
+
+      input.addEventListener('focus', open);
+      input.addEventListener('click', open);
+      input.addEventListener('input', open);
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Escape') close();
+      });
+      toggle.addEventListener('click', () => {
+        if (panel.hidden) open();
+        else close();
+        input.focus();
+      });
+      document.addEventListener('pointerdown', event => {
+        if (!wrapper.contains(event.target)) close();
+      });
+    });
+  }
+
   async function openModal(url) {
     try {
       const res  = await fetch(url, {
@@ -166,6 +270,8 @@
           }
         });
       })();
+
+      enhanceDatalistInputs(body);
 
       if (typeof dlg.showModal === "function") {
         dlg.showModal();
@@ -300,6 +406,8 @@
     const names = files.slice(0,3).map(f => f.name).join(', ');
     label.textContent = files.length > 3 ? `${files.length} files selected (${names}…)` : names;
   });
+
+  enhanceDatalistInputs(document);
 
   // Hamburger nav toggle (desktop fallback, hidden on mobile)
   (function () {

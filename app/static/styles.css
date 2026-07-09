@@ -177,6 +177,71 @@ a:hover { text-decoration: underline; }
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-soft);
 }
+
+.mobile-combobox {
+  position: relative;
+}
+.mobile-combobox .input {
+  padding-right: 42px;
+}
+.mobile-combobox-toggle {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 40px;
+  height: calc(100% - 2px);
+  border: 0;
+  border-left: 1px solid var(--input-border);
+  border-radius: 0 10px 10px 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mobile-combobox-toggle:hover,
+.mobile-combobox-toggle:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+.mobile-combobox-panel {
+  position: absolute;
+  z-index: 260;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: min(260px, 45vh);
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.32);
+  padding: 4px;
+}
+.mobile-combobox-panel[hidden] {
+  display: none;
+}
+.mobile-combobox-option,
+.mobile-combobox-empty {
+  width: 100%;
+  display: block;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+.mobile-combobox-option {
+  cursor: pointer;
+}
+.mobile-combobox-option:hover,
+.mobile-combobox-option:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+.mobile-combobox-empty {
+  color: var(--muted);
+}
 .field.field-error .input,
 .field.field-error select.input,
 .field.field-error textarea.input {
