@@ -1,5 +1,11 @@
 # PantrLytics Changelog
 
+## 2026.10.08.3
+
+### Bug Fixes
+- Wrap the complete Pantry item name using the actual bold font and print stroke before choosing its size. The live app no longer adds an ellipsis to "Granola apple cranberry"; quantity, use-by, QR, roll size and Freezer Basic remain unchanged.
+- Bundle the Pantry fonts so local previews and the add-on use the same lettering and width measurements.
+
 ## 2026.10.08.2
 
 ### Improvements

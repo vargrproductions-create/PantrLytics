@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from sqlmodel import Session, select
 
 
@@ -97,6 +97,23 @@ class PantryProfileTests(unittest.TestCase):
         self.assertEqual(small_size, (330, 1051))
         self.assertIn("media=w79h252", small_cmd)
         self.assertNotIn("MediaType=Tape", small_cmd)
+
+    def test_pantry_title_keeps_complete_name_with_print_stroke(self):
+        canvas = ImageDraw.Draw(Image.new("L", (732, 354), 255))
+        font_path = str(Path(main.BASE_DIR) / "fonts" / "DejaVuSans-Bold.ttf")
+        lines, face, _, _ = main.layout_pantry_title(
+            canvas,
+            "Granola apple cranberry",
+            lambda size: ImageFont.truetype(font_path, size),
+            442,
+            1.0,
+        )
+        self.assertEqual(" ".join(lines), "Granola apple cranberry")
+        self.assertLessEqual(len(lines), 2)
+        self.assertGreaterEqual(face.size, 52)
+        for line in lines:
+            bounds = canvas.textbbox((0, 0), line, font=face, stroke_width=1)
+            self.assertLessEqual(bounds[2] - bounds[0], 442)
 
 
 if __name__ == "__main__":

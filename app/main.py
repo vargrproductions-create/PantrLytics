@@ -44,7 +44,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.08.2"
+APP_VERSION = "2026.10.08.3"
 APP_INTERNAL_PORT = 8099
 
 
@@ -1729,6 +1729,54 @@ def startup():
 # -----------------------------
 # Label image helpers
 # -----------------------------
+def layout_pantry_title(
+    draw: ImageDraw.ImageDraw,
+    name: str,
+    font_factory,
+    max_width: int,
+    scale: float,
+) -> tuple[list[str], ImageFont.FreeTypeFont, int, int]:
+    """Fit the complete item name above the details without clipping or ellipses."""
+    def fits(value: str, face: ImageFont.FreeTypeFont) -> bool:
+        left, _, right, _ = draw.textbbox((0, 0), value, font=face, stroke_width=1)
+        return right - left <= max_width
+
+    def wrap(face: ImageFont.FreeTypeFont) -> list[str]:
+        lines: list[str] = []
+        current = ""
+        for word in name.split():
+            candidate = f"{current} {word}" if current else word
+            if fits(candidate, face):
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = ""
+            # A single long word may need a line break too. Keep every letter.
+            for character in word:
+                if current and not fits(current + character, face):
+                    lines.append(current)
+                    current = ""
+                current += character
+        if current:
+            lines.append(current)
+        return lines
+
+    base_size = round(57 * scale)
+    for limit, start, minimum, top in (
+        (2, base_size, min(base_size, 42), 41),
+        (3, min(base_size, 57), 29, 10),
+        (4, min(base_size, 42), 16, 6),
+    ):
+        for size in range(start, minimum - 1, -1):
+            face = font_factory(size)
+            lines = wrap(face)
+            step = round(size * 1.18)
+            if len(lines) <= limit and top + (len(lines) - 1) * step + size <= 207:
+                return lines, face, (82 if len(lines) == 1 else top), step
+    raise ValueError("Item name is too long for the Pantry label")
+
+
 def make_pantry_label_image(
     item: Item,
     preset: LabelPreset,
@@ -1742,6 +1790,8 @@ def make_pantry_label_image(
     def font(size: int, bold: bool = False):
         filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
         candidates = [
+            # Keep preview and add-on measurements identical across hosts.
+            os.path.join(BASE_DIR, "fonts", filename),
             os.path.join("/usr/share/fonts/truetype/dejavu", filename),
             os.path.join("/usr/share/fonts/TTF", filename),
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -1754,7 +1804,6 @@ def make_pantry_label_image(
         return ImageFont.load_default()
 
     scale = max(0.7, min(1.2, float(preset.font_scale or 1.0)))
-    title_font = font(round(57 * scale), bold=True)
     detail_font = font(round(37 * scale))
 
     def fit_line(value: str, face, max_width: int) -> str:
@@ -1770,20 +1819,16 @@ def make_pantry_label_image(
     left_width = width - 2 * margin - qr_size - 22 if preset.include_qr else width - 2 * margin
     name = (item.name or "Item").strip()
     if preset.include_name:
-        words = name.split()
-        title_lines: list[str] = []
-        while words and len(title_lines) < 2:
-            line = words.pop(0)
-            while words and draw.textbbox((0, 0), line + " " + words[0], font=title_font)[2] <= left_width:
-                line += " " + words.pop(0)
-            if words and len(title_lines) == 1:
-                line += " " + " ".join(words)
-            title_lines.append(fit_line(line, title_font, left_width - 2))
-        title_top = 41 if len(title_lines) > 1 else 82
+        def title_font(size: int):
+            return font(size, bold=True)
+
+        title_lines, face, title_top, line_step = layout_pantry_title(
+            draw, name, title_font, left_width - 8, scale,
+        )
         for index, line in enumerate(title_lines):
             draw.text(
-                (margin, title_top + index * 68), line,
-                font=title_font, fill=0, stroke_width=1, stroke_fill=0,
+                (margin, title_top + index * line_step), line,
+                font=face, fill=0, stroke_width=1, stroke_fill=0,
             )
 
     if preset.include_qr:
