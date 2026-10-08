@@ -3,7 +3,8 @@
 ## 2026.10.08.1
 
 ### Bug Fixes
-- Fit the Pantry artwork within the Brother 62 mm roll's printable width. The CUPS ptouch driver otherwise declared 65 mm media and the printer rejected the label as the wrong roll type. The full-size preview and Freezer Basic print path are unchanged.
+- Fit the Pantry artwork within the Brother 62 mm roll's printable width. The CUPS ptouch driver otherwise declared 65 mm media and the printer rejected the label as the wrong roll type. The Freezer Basic print path is unchanged.
+- Enlarge the Pantry item name, quantity and use-by text; remove the tiny serial, header, divider and redundant QR caption. Keep the item QR and compact 62 × 30 mm format.
 
 ## 2026.10.08
 

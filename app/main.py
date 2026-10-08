@@ -1754,10 +1754,8 @@ def make_pantry_label_image(
         return ImageFont.load_default()
 
     scale = max(0.7, min(1.2, float(preset.font_scale or 1.0)))
-    title_font = font(round(41 * scale), bold=True)
-    detail_font = font(round(24 * scale))
-    kicker_font = font(17, bold=True)
-    serial_font = font(17)
+    title_font = font(round(57 * scale), bold=True)
+    detail_font = font(round(37 * scale))
 
     def fit_line(value: str, face, max_width: int) -> str:
         value = value.strip()
@@ -1767,11 +1765,9 @@ def make_pantry_label_image(
             value = value[:-1]
         return value.rstrip() + "…"
 
-    margin = 23
-    left_width = 430 if preset.include_qr else width - 2 * margin
-    # The ptouch PPD reserves about 3 mm at each cut edge. Keep every mark
-    # inside that area so CUPS does not clip the header or footer.
-    draw.text((margin, 35), "PANTRY", font=kicker_font, fill=0)
+    margin = 20
+    qr_size = 220
+    left_width = width - 2 * margin - qr_size - 22 if preset.include_qr else width - 2 * margin
     name = (item.name or "Item").strip()
     if preset.include_name:
         words = name.split()
@@ -1783,45 +1779,33 @@ def make_pantry_label_image(
             if words and len(title_lines) == 1:
                 line += " " + " ".join(words)
             title_lines.append(fit_line(line, title_font, left_width))
+        title_top = 41 if len(title_lines) > 1 else 82
         for index, line in enumerate(title_lines):
-            draw.text((margin, 65 + index * 51), line, font=title_font, fill=0)
+            draw.text((margin, title_top + index * 68), line, font=title_font, fill=0)
 
-    content_top = 174
     if preset.include_qr:
         qr = qrcode.make(link_override or build_item_link(item), image_factory=qrcode.image.pil.PilImage)
-        qr = qr.resize((220, 220), Image.Resampling.NEAREST)
-        image.paste(qr, (width - margin - 220, 48))
+        qr = qr.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+        image.paste(qr, (width - margin - qr_size, 70))
 
     details: list[str] = []
+    if preset.include_qty_unit:
+        details.append(f"Qty: {item.quantity} {(item.unit or '').strip()}".strip())
+    if preset.include_use_by and item.use_by_date:
+        details.append(f"Use by: {item.use_by_date}")
     if preset.include_location and item.location:
         details.append(f"Loc: {item.location}")
     if preset.include_bin and item.bin_number:
         details.append(f"Bin: {item.bin_number}")
-    if preset.include_qty_unit:
-        details.append(f"Qty: {item.quantity} {(item.unit or '').strip()}".strip())
     if preset.include_condition and item.condition:
         details.append(f"Cond: {item.condition}")
     if preset.include_cook_date and item.origin_date:
         details.append(f"{item.origin_date_label or 'Origin'}: {item.origin_date}")
-    if preset.include_use_by and item.use_by_date:
-        details.append(f"Use-by: {item.use_by_date}")
     if preset.include_use_within and getattr(item, "use_within", None):
         details.append(f"Use within: {item.use_within}")
 
-    for index, detail in enumerate(details[:4]):
-        y = content_top + index * 33
-        if y + 28 > height - 73:
-            break
-        draw.text((margin, y), fit_line(detail, detail_font, left_width), font=detail_font, fill=0)
-
-    draw.line((margin, height - 74, width - margin, height - 74), fill=0, width=2)
-    serial = (item.serial_number or "").strip()
-    if serial:
-        draw.text((margin, height - 65), fit_line(serial, serial_font, left_width), font=serial_font, fill=0)
-    if preset.include_qr:
-        scan_text = "SCAN TO OPEN"
-        scan_width = draw.textbbox((0, 0), scan_text, font=kicker_font)[2]
-        draw.text((width - margin - scan_width, height - 65), scan_text, font=kicker_font, fill=0)
+    for index, detail in enumerate(details[:2]):
+        draw.text((margin, 219 + index * 45), fit_line(detail, detail_font, left_width), font=detail_font, fill=0)
     return image
 
 
