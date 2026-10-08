@@ -44,7 +44,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.08"
+APP_VERSION = "2026.10.08.1"
 APP_INTERNAL_PORT = 8099
 
 
@@ -160,6 +160,7 @@ DEFAULT_UNIT_ENTRIES = [
 ]
 MAX_LABEL_COPIES = 25  # Safety limit for print jobs triggered via UI
 PANTRY_MEDIA = "Custom.62x30mm"
+PANTRY_PRINTABLE_WIDTH_MM = 59  # The ptouch PPD adds about 1.5 mm on each side.
 SMALL_MEDIA = "w79h252"  # Existing 29 x 90 mm stock; retain its current print path.
 SUPPORTED_LABEL_MEDIA = (SMALL_MEDIA, PANTRY_MEDIA, "w154h64", "w154h198")
 PANTRY_PRESET_NAME = "Pantry — removable 62 × 30 mm"
@@ -1822,6 +1823,21 @@ def make_pantry_label_image(
         scan_width = draw.textbbox((0, 0), scan_text, font=kicker_font)[2]
         draw.text((width - margin - scan_width, height - 65), scan_text, font=kicker_font, fill=0)
     return image
+
+
+def pantry_image_for_print(image: Image.Image) -> Image.Image:
+    """Fit the approved 62 × 30 mm design into the roll's printable width.
+
+    CUPS expands a full-width 62 mm PNG by the ptouch PPD's side margins,
+    making the raster command falsely declare 65 mm media. A 59 mm PNG
+    keeps that declaration at the loaded roll's actual 62 mm width.
+    """
+    width = round(PANTRY_PRINTABLE_WIDTH_MM / 25.4 * 300)
+    height = round(image.height * width / image.width)
+    scaled = image.resize((width, height), Image.Resampling.LANCZOS)
+    printable = Image.new("L", (width, image.height), 255)
+    printable.paste(scaled, (0, (image.height - height) // 2))
+    return printable
 
 
 def make_label_image(
@@ -4119,7 +4135,11 @@ def _print_impl(
 
     link = build_item_link(item, request=request)
     base_img = make_label_image(item, preset, link_override=link)
-    img_for_print = base_img if preset.media == PANTRY_MEDIA else base_img.rotate(270, expand=True)
+    img_for_print = (
+        pantry_image_for_print(base_img)
+        if preset.media == PANTRY_MEDIA
+        else base_img.rotate(270, expand=True)
+    )
 
     buf = io.BytesIO()
     img_for_print.save(buf, format="PNG", dpi=(300, 300))

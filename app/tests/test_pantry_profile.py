@@ -89,7 +89,7 @@ class PantryProfileTests(unittest.TestCase):
 
         pantry_cmd, pantry_size = submitted[0]
         small_cmd, small_size = submitted[1]
-        self.assertEqual(pantry_size, (732, 354))
+        self.assertEqual(pantry_size, (697, 354))
         self.assertIn("media=Custom.62x30mm", pantry_cmd)
         self.assertIn("PageSize=Custom.62x30mm", pantry_cmd)
         self.assertIn("MediaType=Tape", pantry_cmd)

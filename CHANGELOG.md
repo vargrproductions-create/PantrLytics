@@ -1,5 +1,10 @@
 # PantrLytics Changelog
 
+## 2026.10.08.1
+
+### Bug Fixes
+- Fit the Pantry artwork within the Brother 62 mm roll's printable width. The CUPS ptouch driver otherwise declared 65 mm media and the printer rejected the label as the wrong roll type. The full-size preview and Freezer Basic print path are unchanged.
+
 ## 2026.10.08
 
 ### Features
