@@ -1,5 +1,10 @@
 # PantrLytics Changelog
 
+## 2026.10.08.2
+
+### Improvements
+- Give the Pantry label's main item name a slightly heavier print weight while keeping its size, quantity, use-by date, QR and continuous-roll settings unchanged.
+
 ## 2026.10.08.1
 
 ### Bug Fixes

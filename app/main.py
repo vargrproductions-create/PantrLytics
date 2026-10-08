@@ -44,7 +44,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.08.1"
+APP_VERSION = "2026.10.08.2"
 APP_INTERNAL_PORT = 8099
 
 
@@ -1778,10 +1778,13 @@ def make_pantry_label_image(
                 line += " " + words.pop(0)
             if words and len(title_lines) == 1:
                 line += " " + " ".join(words)
-            title_lines.append(fit_line(line, title_font, left_width))
+            title_lines.append(fit_line(line, title_font, left_width - 2))
         title_top = 41 if len(title_lines) > 1 else 82
         for index, line in enumerate(title_lines):
-            draw.text((margin, title_top + index * 68), line, font=title_font, fill=0)
+            draw.text(
+                (margin, title_top + index * 68), line,
+                font=title_font, fill=0, stroke_width=1, stroke_fill=0,
+            )
 
     if preset.include_qr:
         qr = qrcode.make(link_override or build_item_link(item), image_factory=qrcode.image.pil.PilImage)
