@@ -53,6 +53,13 @@
           ></textarea>
         </div>
 
+        <div class="field field--full">
+          <label style="display:flex; gap:9px; align-items:flex-start;">
+            <input type="checkbox" name="small_roll_confirmed" value="true">
+            <span>The existing small labels are loaded (quick labels use only that stock).</span>
+          </label>
+        </div>
+
         <div class="actions field--full">
           <button
             class="btn btn-secondary"
@@ -77,12 +84,12 @@
     <aside class="detail-photo-card">
       <h2 class="card-title">How presets work</h2>
       <p class="muted">
-        <strong>Item labels</strong> (when you click <em>Print Label</em> on an item)
-        always use the <strong>current default preset</strong>.
+        <strong>Item labels</strong> use the profile you select before printing.
+        The default profile is preselected, so your existing small-label layout stays the default.
       </p>
       <p class="muted">
-        Create a few presets (e.g. “Freezer basic”, “Pantry detail”) and mark
-        one as default. You can switch defaults any time from here.
+        The pantry profile is for removable 62 mm continuous stock. After swapping rolls,
+        select the matching profile and confirm the loaded roll before printing.
       </p>
     </aside>
   </div>
@@ -174,8 +181,9 @@
     <div class="field">
       <label class="kv-label" for="preset_media">Media</label>
       <select class="input" id="preset_media" name="media">
-        <option value="w79h252">Small address (w79h252)</option>
+        <option value="w79h252">Existing small labels (29 × 90 mm)</option>
         <option value="w154h64">Large label (w154h64)</option>
+        <option value="Custom.62x30mm">Removable continuous roll (62 × 30 mm cut)</option>
       </select>
     </div>
 

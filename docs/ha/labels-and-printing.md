@@ -19,8 +19,11 @@ The QR code URL is built from the `base_url` you set in the add-on config. If `b
 ## Printing a label from an item
 
 1. Open the item detail page.
-2. Choose how many copies you want in the **copy count** field.
-3. Click **Print Label**. The label is sent directly to your IPP printer as a single CUPS job.
+2. Choose how many copies you want and click **Choose label & print**.
+3. Select the profile and review its preview. The current default small-label profile is preselected.
+4. Check that the matching roll is loaded and no earlier jobs for the other roll are pending, then confirm and print.
+
+The optional **Pantry — removable 62 × 30 mm** profile is for 62 mm continuous removable stock. It sets the wider layout, continuous-tape media and 30 mm cut length together on that print job. The existing small profile keeps its prior layout and media settings. The printer cannot detect the adhesive type; swapping rolls and confirming the selection are manual steps.
 
 If no printer is configured, the button will not send to a printer — use **Preview Label** instead.
 
@@ -40,13 +43,13 @@ The **Designer** page (accessible from the sidebar or bottom nav) has two sectio
 For one-off labels that are not linked to any inventory item — useful for boxes, bins, or anything you want to label on the fly.
 
 - Enter a **Title** (large text) and optional **Description** (smaller text).
-- Click **Preview** to see the PNG, or **Print quick label** to send it directly to your printer.
+- Click **Preview** to see the PNG. Quick labels use the existing small stock; confirm that roll is loaded before clicking **Print quick label**.
 
 ### Presets
-Presets control how item labels look when you print from an item page. Each preset defines the label size, font, and layout. You can set a **default preset** from the preset cards.
+Presets control how item labels look and which media settings accompany the print job. Choose the profile on the print confirmation page. You can set which profile is preselected from the preset cards.
 
 - **Printer side**: For twin-roll printers, choose Auto, Left, or Right to select which roll is used.
-- The active default preset is highlighted on the preset card.
+- The default preset is highlighted on its card; creating the pantry profile does not change the existing default.
 
 ---
 

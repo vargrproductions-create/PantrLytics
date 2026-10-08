@@ -127,12 +127,12 @@
 
       <div class="sidebar-section">
         <span class="sidebar-section-label">Print Labels</span>
-        <form method="post" action="{{ url_for('print_label_post', item_id=item.id) }}" class="sidebar-print-form">
+        <form method="get" action="{{ url_for('print_label_get', item_id=item.id) }}" class="sidebar-print-form">
           <label for="print-copies-{{ item.id }}" class="muted" style="font-size:12px;">Copies</label>
           <input id="print-copies-{{ item.id }}" name="copies" type="number"
                  min="1" max="{{ max_label_copies }}" value="1"
                  class="input input-small" style="width:56px;" aria-label="Number of labels">
-          <button class="btn sidebar-btn" type="submit" style="flex:1;">Print</button>
+          <button class="btn sidebar-btn" type="submit" style="flex:1;">Choose label &amp; print</button>
         </form>
         <a class="btn btn-ghost sidebar-btn" href="{{ url_for('label_png', item_id=item.id) }}"
            target="_blank" rel="noopener">Preview Label</a>

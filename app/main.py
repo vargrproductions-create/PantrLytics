@@ -44,7 +44,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.07.09"
+APP_VERSION = "2026.10.08"
 APP_INTERNAL_PORT = 8099
 
 
@@ -159,6 +159,10 @@ DEFAULT_UNIT_ENTRIES = [
     {"name": "packages", "adjustable": False},
 ]
 MAX_LABEL_COPIES = 25  # Safety limit for print jobs triggered via UI
+PANTRY_MEDIA = "Custom.62x30mm"
+SMALL_MEDIA = "w79h252"  # Existing 29 x 90 mm stock; retain its current print path.
+SUPPORTED_LABEL_MEDIA = (SMALL_MEDIA, PANTRY_MEDIA, "w154h64", "w154h198")
+PANTRY_PRESET_NAME = "Pantry — removable 62 × 30 mm"
 DEPLETION_REASONS = [
     "Consumed/Used",
     "Discarded (expired/spoiled)",
@@ -512,6 +516,7 @@ def init_db():
     # Seed default UseWithin options if table is empty
     ensure_usewithin_defaults()
     ensure_origin_date_label_defaults()
+    ensure_pantry_label_preset()
 
 
 def ensure_usewithin_defaults():
@@ -1723,6 +1728,102 @@ def startup():
 # -----------------------------
 # Label image helpers
 # -----------------------------
+def make_pantry_label_image(
+    item: Item,
+    preset: LabelPreset,
+    link_override: str | None = None,
+) -> Image.Image:
+    """Render a compact 62 mm-wide, 30 mm-long continuous-roll label at 300 dpi."""
+    width = round(62 / 25.4 * 300)
+    height = round(30 / 25.4 * 300)
+    image = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(image)
+    def font(size: int, bold: bool = False):
+        filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+        candidates = [
+            os.path.join("/usr/share/fonts/truetype/dejavu", filename),
+            os.path.join("/usr/share/fonts/TTF", filename),
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ]
+        for path in candidates:
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    scale = max(0.7, min(1.2, float(preset.font_scale or 1.0)))
+    title_font = font(round(41 * scale), bold=True)
+    detail_font = font(round(24 * scale))
+    kicker_font = font(17, bold=True)
+    serial_font = font(17)
+
+    def fit_line(value: str, face, max_width: int) -> str:
+        value = value.strip()
+        if draw.textbbox((0, 0), value, font=face)[2] <= max_width:
+            return value
+        while value and draw.textbbox((0, 0), value + "…", font=face)[2] > max_width:
+            value = value[:-1]
+        return value.rstrip() + "…"
+
+    margin = 23
+    left_width = 430 if preset.include_qr else width - 2 * margin
+    # The ptouch PPD reserves about 3 mm at each cut edge. Keep every mark
+    # inside that area so CUPS does not clip the header or footer.
+    draw.text((margin, 35), "PANTRY", font=kicker_font, fill=0)
+    name = (item.name or "Item").strip()
+    if preset.include_name:
+        words = name.split()
+        title_lines: list[str] = []
+        while words and len(title_lines) < 2:
+            line = words.pop(0)
+            while words and draw.textbbox((0, 0), line + " " + words[0], font=title_font)[2] <= left_width:
+                line += " " + words.pop(0)
+            if words and len(title_lines) == 1:
+                line += " " + " ".join(words)
+            title_lines.append(fit_line(line, title_font, left_width))
+        for index, line in enumerate(title_lines):
+            draw.text((margin, 65 + index * 51), line, font=title_font, fill=0)
+
+    content_top = 174
+    if preset.include_qr:
+        qr = qrcode.make(link_override or build_item_link(item), image_factory=qrcode.image.pil.PilImage)
+        qr = qr.resize((220, 220), Image.Resampling.NEAREST)
+        image.paste(qr, (width - margin - 220, 48))
+
+    details: list[str] = []
+    if preset.include_location and item.location:
+        details.append(f"Loc: {item.location}")
+    if preset.include_bin and item.bin_number:
+        details.append(f"Bin: {item.bin_number}")
+    if preset.include_qty_unit:
+        details.append(f"Qty: {item.quantity} {(item.unit or '').strip()}".strip())
+    if preset.include_condition and item.condition:
+        details.append(f"Cond: {item.condition}")
+    if preset.include_cook_date and item.origin_date:
+        details.append(f"{item.origin_date_label or 'Origin'}: {item.origin_date}")
+    if preset.include_use_by and item.use_by_date:
+        details.append(f"Use-by: {item.use_by_date}")
+    if preset.include_use_within and getattr(item, "use_within", None):
+        details.append(f"Use within: {item.use_within}")
+
+    for index, detail in enumerate(details[:4]):
+        y = content_top + index * 33
+        if y + 28 > height - 73:
+            break
+        draw.text((margin, y), fit_line(detail, detail_font, left_width), font=detail_font, fill=0)
+
+    draw.line((margin, height - 74, width - margin, height - 74), fill=0, width=2)
+    serial = (item.serial_number or "").strip()
+    if serial:
+        draw.text((margin, height - 65), fit_line(serial, serial_font, left_width), font=serial_font, fill=0)
+    if preset.include_qr:
+        scan_text = "SCAN TO OPEN"
+        scan_width = draw.textbbox((0, 0), scan_text, font=kicker_font)[2]
+        draw.text((width - margin - scan_width, height - 65), scan_text, font=kicker_font, fill=0)
+    return image
+
+
 def make_label_image(
     item: Item,
     preset: LabelPreset | None = None,
@@ -1737,6 +1838,9 @@ def make_label_image(
       - font scale
       - basic alignment (left / center)
     """
+    if preset is not None and preset.media == PANTRY_MEDIA:
+        return make_pantry_label_image(item, preset, link_override)
+
     dpi = 300
     w = int((89 / 25.4) * dpi)  # 89mm wide
     h = int((28 / 25.4) * dpi)  # 28mm high
@@ -2070,6 +2174,40 @@ def get_default_preset(session: Session) -> LabelPreset:
     session.commit()
     session.refresh(preset)
     return preset
+
+
+def ensure_pantry_label_preset() -> None:
+    """Add the optional pantry profile without changing any existing default."""
+    with Session(engine) as session:
+        existing = session.exec(
+            select(LabelPreset).where(LabelPreset.name == PANTRY_PRESET_NAME)
+        ).first()
+        if existing:
+            return
+        session.add(LabelPreset(
+            name=PANTRY_PRESET_NAME,
+            media=PANTRY_MEDIA,
+            printer_side="auto",
+            include_name=True,
+            include_location=False,
+            include_bin=False,
+            include_qty_unit=True,
+            include_condition=False,
+            include_cook_date=False,
+            include_use_by=True,
+            include_use_within=False,
+            include_qr=True,
+            align_center=False,
+            font_scale=1.0,
+            is_default=False,
+        ))
+        try:
+            session.commit()
+        except Exception as error:
+            # Concurrent first boots may race to create this uniquely named preset.
+            session.rollback()
+            if not session.exec(select(LabelPreset).where(LabelPreset.name == PANTRY_PRESET_NAME)).first():
+                raise error
 
 
 def _get_item_or_404(session: Session, item_id: int) -> Item:
@@ -3689,19 +3827,22 @@ def export_csv():
 # Label PNG routes (preview)
 # -----------------------------
 @app.get("/label/{item_id}.png", name="label_png")
-def label_png_file(request: Request, item_id: int):
+def label_png_file(request: Request, item_id: int, preset_id: int | None = None):
     """
     File-style PNG route, used by the "Direct label URL" link
     and anywhere we need a label preview image.
 
-    Uses the *default* label preset.
+    Uses the default preset unless a specific profile is selected.
     """
     with Session(engine) as session:
+        session.expire_on_commit = False
         item = session.get(Item, item_id)
         if not item:
             return Response(status_code=404)
 
-        preset = get_default_preset(session)
+        preset = session.get(LabelPreset, preset_id) if preset_id is not None else get_default_preset(session)
+        if not preset or preset.media not in SUPPORTED_LABEL_MEDIA:
+            return Response(status_code=404)
         link = build_item_link(item, request=request)
         png = make_label_png(item, preset, link_override=link)
 
@@ -3764,11 +3905,13 @@ async def label_preset_save(
     printer_side = (printer_side or "auto").lower()
     if printer_side not in ("auto", "left", "right"):
         printer_side = "auto"
+    if media not in SUPPORTED_LABEL_MEDIA:
+        return Response("Unsupported label media.", status_code=400)
 
     with Session(engine) as session:
         preset = LabelPreset(
             name=name.strip() or "Preset",
-            media=media.strip() or "w79h252",
+            media=media,
             printer_side=printer_side,
             include_name=include_name,
             include_location=include_location,
@@ -3856,7 +3999,7 @@ async def label_preset_delete(
 # --- Printing helpers -------------------------------------------------
 
 # Default label size used today (based on lpoptions: *w79h252)
-DEFAULT_MEDIA = "w79h252"
+DEFAULT_MEDIA = SMALL_MEDIA
 
 
 def _roll_for_media(media: str) -> str | None:
@@ -3897,13 +4040,23 @@ def _normalize_copy_count(value) -> int:
 
 @app.get("/print/{item_id}", name="print_label_get")
 def print_label_get(request: Request, item_id: int, copies: int = 1):
-    # Simple GET: print and then redirect back to the item
-    return _print_impl(
-        request,
-        item_id,
-        prefer_redirect=True,
-        copies=_normalize_copy_count(copies),
-    )
+    # A GET must never enqueue a job. Select the profile and confirm the loaded
+    # stock before the POST below sends anything to CUPS.
+    with Session(engine) as session:
+        session.expire_on_commit = False
+        item = session.get(Item, item_id)
+        if not item:
+            return Response(status_code=404)
+        default = get_default_preset(session)
+        presets = session.exec(select(LabelPreset).order_by(LabelPreset.name)).all()
+    return templates.TemplateResponse("print_label.html", {
+        "request": request,
+        "item": item,
+        "presets": [p for p in presets if p.media in SUPPORTED_LABEL_MEDIA],
+        "default_preset_id": default.id,
+        "copies": _normalize_copy_count(copies),
+        "max_label_copies": MAX_LABEL_COPIES,
+    })
 
 
 @app.post("/print/{item_id}", name="print_label_post")
@@ -3911,12 +4064,16 @@ def print_label_post(
     request: Request,
     item_id: int,
     copies: int = Form(1),
+    preset_id: int = Form(...),
+    loaded_roll_confirmed: bool = Form(False),
 ):
-    # POST (used from UI): print and then redirect back to the item
+    if not loaded_roll_confirmed:
+        return Response("Confirm the matching roll is loaded before printing.", status_code=400)
     return _print_impl(
         request,
         item_id,
         prefer_redirect=True,
+        preset_id=preset_id,
         copies=_normalize_copy_count(copies),
     )
 
@@ -3925,13 +4082,14 @@ def _print_impl(
     request: Request,
     item_id: int,
     prefer_redirect: bool = False,
-    media: str | None = None,
+    preset_id: int | None = None,
     copies: int = 1,
 ):
     """
     Core print implementation.
     """
     with Session(engine) as session:
+        session.expire_on_commit = False
         item = session.get(Item, item_id)
         if not item:
             if prefer_redirect:
@@ -3941,11 +4099,13 @@ def _print_impl(
                 )
             return JSONResponse({"ok": False, "error": "Item not found"}, status_code=404)
 
-        preset = get_default_preset(session)
+        preset = session.get(LabelPreset, preset_id) if preset_id is not None else get_default_preset(session)
+        if not preset or preset.media not in SUPPORTED_LABEL_MEDIA:
+            return Response("Unsupported label profile.", status_code=400)
 
     # If IPP not configured, fall back to label PNG preview
     if not IPP_HOST or not IPP_PRINTER:
-        label_url = request.url_for("label_png", item_id=item_id)
+        label_url = str(request.url_for("label_png", item_id=item_id)) + f"?preset_id={preset.id}"
         if prefer_redirect:
             return RedirectResponse(url=label_url, status_code=303)
         return JSONResponse(
@@ -3959,7 +4119,7 @@ def _print_impl(
 
     link = build_item_link(item, request=request)
     base_img = make_label_image(item, preset, link_override=link)
-    img_for_print = base_img.rotate(270, expand=True)
+    img_for_print = base_img if preset.media == PANTRY_MEDIA else base_img.rotate(270, expand=True)
 
     buf = io.BytesIO()
     img_for_print.save(buf, format="PNG", dpi=(300, 300))
@@ -3969,7 +4129,7 @@ def _print_impl(
         tmp.write(png_bytes)
         tmp_path = tmp.name
 
-    media_opt = media or DEFAULT_MEDIA
+    media_opt = preset.media
     slot = _slot_for_preset(preset, media_opt)
     copies = _normalize_copy_count(copies)
 
@@ -3994,6 +4154,14 @@ def _print_impl(
     ]
     if slot:
         base_cmd.extend(["-o", f"InputSlot={slot}"])
+    if media_opt == PANTRY_MEDIA:
+        base_cmd.extend([
+            "-o", "PageSize=Custom.62x30mm",
+            "-o", "MediaType=Tape",
+            "-o", "AutoCut=True",
+            "-o", "CutLabel=1",
+            "-o", "print-scaling=none",
+        ])
 
     file_args = [tmp_path] * copies
     cmd = [*base_cmd, *file_args]
@@ -4052,10 +4220,13 @@ async def quick_label_print(
     request: Request,
     title: str = Form(""),
     description: str = Form(""),
+    small_roll_confirmed: bool = Form(False),
 ):
     """
     Print a one-off quick label that is NOT tied to an Item in the DB.
     """
+    if not small_roll_confirmed:
+        return Response("Confirm the existing small-label roll is loaded before printing.", status_code=400)
     if not IPP_HOST or not IPP_PRINTER:
         img = make_quick_label_image(title, description)
         buf = io.BytesIO()

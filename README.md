@@ -119,8 +119,8 @@ Surfaces items that haven't been touched (created, edited, depleted, or manually
 
 ### Label Designer & Printing
 
-- **Item page**: Preview Label (PNG) or Print Label with copy count. Multiple copies submit as one CUPS job.
-- **Label Designer**: customise layout, font sizes, fields shown, and QR code placement. Save as named presets.
+- **Item page**: choose the copy count, then select a label profile and confirm the matching roll is loaded before printing. Multiple copies submit as one CUPS job.
+- **Label Designer**: customise layout, font sizes, fields shown, and QR code placement. Save as named presets. The optional Pantry profile uses 62 mm continuous removable tape with a 30 mm cut length; the existing small-label default remains unchanged.
 - **QR code** encodes `base_url + /item/<id>`. If scans fail, verify `base_url` and reprint.
 
 ### Admin sections

@@ -1,5 +1,11 @@
 # PantrLytics Changelog
 
+## 2026.10.08
+
+### Features
+- Added an optional compact 62 × 30 mm removable pantry label profile with its own preview and continuous-roll print settings. The existing small-label design remains the default.
+- Item printing now asks for a profile and confirmation that its matching roll is loaded before sending a job; previews do not print.
+
 ## 2026.07.09
 
 ### Bug Fixes
