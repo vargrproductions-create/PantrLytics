@@ -13,6 +13,7 @@ import socket
 from typing import Optional, List
 
 from fastapi import FastAPI, Request, Form, UploadFile, File, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     HTMLResponse,
@@ -45,7 +46,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.18.1"
+APP_VERSION = "2026.10.18.2"
 APP_INTERNAL_PORT = 8099
 
 
@@ -3138,23 +3139,47 @@ def items_updated_at():
 SCAN_MAX_BYTES = 25 * 1024 * 1024
 SCAN_PHOTO_RE = re.compile(r"^\d+_[0-9a-f]{32}\.jpg$")
 LABEL_MODEL = "claude-opus-5-5"
-LABEL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "name": {"type": "string", "description": "Product name as a shopper would say it, without brand or pack size; empty if unreadable"},
-        "brand": {"type": "string", "description": "Brand, or empty"},
-        "pack_size": {"type": "number", "description": "Net amount in one pack in pack_unit, 0 if not shown"},
-        "pack_unit": {"type": "string", "enum": ["g", "ml", "each", ""]},
-        "barcode": {"type": "string", "description": "Digits printed under the barcode if legible, else empty"},
-    },
-    "required": ["name", "brand", "pack_size", "pack_unit", "barcode"],
-    "additionalProperties": False,
-}
+def _label_schema(categories: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Product name as a shopper would say it, without brand or pack size; empty if unreadable"},
+            "brand": {"type": "string", "description": "Brand, or empty"},
+            "pack_size": {"type": "number", "description": "Net amount in one pack in pack_unit, 0 if not shown"},
+            "pack_unit": {"type": "string", "enum": ["g", "ml", "each", ""]},
+            "barcode": {"type": "string", "description": "Digits printed under the barcode if legible, else empty"},
+            "best_before": {"type": "string", "description": "Best-before or use-by date printed on the pack as YYYY-MM-DD (Australian dates are day first), else empty"},
+            "category": {"type": "string", "enum": list(categories) + [""], "description": "The closest of these categories, or empty if none fits"},
+        },
+        "required": ["name", "brand", "pack_size", "pack_unit", "barcode", "best_before", "category"],
+        "additionalProperties": False,
+    }
+
+
 LABEL_PROMPT = (
     "This is a photo of a grocery product from a home pantry in Australia. "
     "Read the packaging and fill in the fields. Convert kg to g and L to ml. "
     "Leave a field empty (or 0) rather than guessing when it is not visible."
 )
+
+# Open Food Facts category tags -> PantrLytics category, first match wins; only used if that category exists
+OFF_CATEGORY_RULES = [
+    (("maple", "syrup", "honey", "jam", "marmalade", "sweet-spread", "chocolate-spread", "topping"), "Topping"),
+    (("cereal", "grain", "rice", "pasta", "noodle", "legume", "pulse", "lentil", "bean", "oat", "flour",
+      "couscous", "quinoa", "barley", "tapioca", "polenta"), "Grains"),
+    (("yeast-extract", "sugar", "salt", "oil", "vinegar", "sauce", "condiment", "spice", "herb", "stock",
+      "baking", "spread", "canned", "tinned", "nut", "seed", "dried"), "Staples"),
+]
+
+
+def category_from_off(tags: list[str], categories: list[str]) -> str | None:
+    known = {c.lower(): c for c in categories}
+    for keywords, category in OFF_CATEGORY_RULES:
+        if category.lower() not in known:
+            continue
+        if any(k in tag for tag in tags or [] for k in keywords):
+            return known[category.lower()]
+    return None
 
 
 class LabelReadError(Exception):
@@ -3196,7 +3221,7 @@ def lookup_open_food_facts(barcode: str) -> dict | None:
     import urllib.request as _urlreq
     url = (
         f"https://world.openfoodfacts.org/api/v2/product/{barcode}.json"
-        "?fields=product_name,brands,quantity,product_quantity,product_quantity_unit"
+        "?fields=product_name,brands,quantity,product_quantity,product_quantity_unit,categories_tags"
     )
     req = _urlreq.Request(url, headers={"User-Agent": f"PantrLytics/{APP_VERSION}"})
     try:
@@ -3218,10 +3243,11 @@ def lookup_open_food_facts(barcode: str) -> dict | None:
         if qty is not None and unit in ("g", "ml"):
             pack_size, pack_unit = qty, unit
     brand = (product.get("brands") or "").split(",")[0].strip()
-    return {"name": name, "brand": brand, "pack_size": pack_size, "pack_unit": pack_unit, "source": "Open Food Facts"}
+    return {"name": name, "brand": brand, "pack_size": pack_size, "pack_unit": pack_unit,
+            "categories_tags": product.get("categories_tags") or [], "source": "Open Food Facts"}
 
 
-def read_label_with_claude(img: Image.Image) -> dict:
+def read_label_with_claude(img: Image.Image, categories: list[str] | None = None) -> dict:
     """Ask Claude to read the label. Raises LabelReadError with a short reason on any failure."""
     import base64
     import anthropic
@@ -3242,7 +3268,7 @@ def read_label_with_claude(img: Image.Image) -> dict:
             max_tokens=8000,
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": LABEL_SCHEMA}},
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": _label_schema(categories or [])}},
             messages=[{
                 "role": "user",
                 "content": [
@@ -3272,8 +3298,17 @@ def read_label_with_claude(img: Image.Image) -> dict:
         "pack_size": _to_float(data.get("pack_size")) or None,
         "pack_unit": data.get("pack_unit") or None,
         "barcode": normalize_barcode(data.get("barcode")),
+        "best_before": _iso_date_or_none(data.get("best_before")),
+        "category": data.get("category") or None,
         "source": "the label photo",
     }
+
+
+def _iso_date_or_none(v) -> str | None:
+    try:
+        return dt.date.fromisoformat((v or "").strip()).isoformat()
+    except ValueError:
+        return None
 
 
 def _save_scan_photo(img: Image.Image) -> str:
@@ -3286,19 +3321,20 @@ def _save_scan_photo(img: Image.Image) -> str:
     return name
 
 
-def _attach_scan_photo(session: Session, item: Item, token: str | None) -> None:
-    token = (token or "").strip()
-    if not token or os.path.basename(token) != token or not SCAN_PHOTO_RE.match(token):
-        return
-    path = os.path.join(PHOTOS_DIR, token)
-    if not os.path.isfile(path):
-        return
-    if session.exec(select(ItemPhoto).where(ItemPhoto.path == path)).first():
-        return
-    session.add(ItemPhoto(item_id=item.id, path=path))
-    if not item.photo_path:
-        item.photo_path = path
-        session.add(item)
+def _attach_scan_photo(session: Session, item: Item, tokens: str | None) -> None:
+    """Attach scan photos named by space-separated tokens; anything that isn't a fresh scan photo is ignored."""
+    for token in (tokens or "").split():
+        if os.path.basename(token) != token or not SCAN_PHOTO_RE.match(token):
+            continue
+        path = os.path.join(PHOTOS_DIR, token)
+        if not os.path.isfile(path):
+            continue
+        if session.exec(select(ItemPhoto).where(ItemPhoto.path == path)).first():
+            continue
+        session.add(ItemPhoto(item_id=item.id, path=path))
+        if not item.photo_path:
+            item.photo_path = path
+            session.add(item)
     session.commit()
 
 
@@ -3341,24 +3377,35 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
         match = _find_by_product_barcode(session, barcode)
         if match:
             return _scan_page(request, match=match, barcode=barcode)
+        categories = _choices(session)[0]
 
     info = lookup_open_food_facts(barcode) if barcode else None
+    if info:
+        info["category"] = category_from_off(info.get("categories_tags"), categories)
     notice = ""
-    if not info:
+    # Ask Claude when the database had nothing, or left the size or category blank
+    if not info or not info.get("pack_size") or not info.get("category"):
         try:
-            info = read_label_with_claude(img)
+            label = read_label_with_claude(img, categories)
         except LabelReadError as e:
-            info = None
-            notice = f"Could not fill this in automatically: {e}."
-        if info:
-            barcode = barcode or info.get("barcode")
+            label = None
+            if not info:
+                notice = f"Could not fill this in automatically: {e}."
+        if label and not barcode and label.get("barcode"):
+            barcode = label["barcode"]
             with Session(engine) as session:
                 match = _find_by_product_barcode(session, barcode)
                 if match:
                     return _scan_page(request, match=match, barcode=barcode)
-            if not info.get("name"):
-                info = None
-                notice = "Could not read the product name from the photo."
+        if label and info:
+            for key in ("pack_size", "pack_unit", "category", "best_before"):
+                if not info.get(key) and label.get(key):
+                    info[key] = label[key]
+            info["source"] = "Open Food Facts and the label photo"
+        elif label and label.get("name"):
+            info = label
+        elif label:
+            notice = "Could not read the product name from the photo."
 
     form_values = {
         "location": "Pantry",
@@ -3370,16 +3417,42 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
         "scan_photo": _save_scan_photo(img),
     }
     if info:
-        form_values.update({
-            "name": info["name"],
-            "pack_size": "%g" % info["pack_size"] if info.get("pack_size") else "",
-            "pack_unit": info.get("pack_unit") or "",
-            "notes": f"Brand: {info['brand']}" if info.get("brand") else "",
-        })
+        _merge_into_form(form_values, info, only_empty=False)
         notice = f"Filled in from {info['source']}. Check the details, then save."
     elif barcode:
         notice = (notice + " " if notice else "") + f"Barcode {barcode} was read; add the details below."
+    return _new_item_page(request, form_values, notice)
 
+
+NEW_ITEM_FIELDS = (
+    "name", "category", "tags", "location", "bin_number", "quantity", "unit", "condition",
+    "origin_date", "origin_date_label", "use_by_date", "use_within", "notes", "review_window_days",
+    "pack_size", "pack_unit", "product_barcode", "scan_photo",
+)
+
+
+def _merge_into_form(form_values: dict, info: dict, only_empty: bool) -> list[str]:
+    """Copy what a lookup found into the New Item form; returns the labels of fields filled."""
+    found = {
+        "name": info.get("name") or "",
+        "pack_size": "%g" % info["pack_size"] if info.get("pack_size") else "",
+        "pack_unit": info.get("pack_unit") or "",
+        "category": info.get("category") or "",
+        "use_by_date": info.get("best_before") or "",
+        "notes": f"Brand: {info['brand']}" if info.get("brand") else "",
+    }
+    labels = {"name": "name", "pack_size": "size", "pack_unit": "size", "category": "category",
+              "use_by_date": "best-before date", "notes": "brand"}
+    filled = []
+    for key, value in found.items():
+        if value and (not only_empty or not str(form_values.get(key) or "").strip()):
+            form_values[key] = value
+            if labels[key] not in filled:
+                filled.append(labels[key])
+    return filled
+
+
+def _new_item_page(request: Request, form_values: dict, notice: str):
     with Session(engine) as session:
         cats, bins, locations, use_withins = _choices(session)
         unit_names = get_unit_names(session)
@@ -3401,8 +3474,41 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
             "form_values": form_values,
             "error": "",
             "scan_notice": notice.strip(),
+            "has_label_reader": bool(_anthropic_api_key()),
         },
     )
+
+
+@app.post("/scan/more", name="scan_more", response_class=HTMLResponse)
+async def scan_more(request: Request):
+    """Read the size or best-before date from another photo, keeping what is already on the form."""
+    form = await request.form()
+    form_values = {key: form.get(key, "") for key in NEW_ITEM_FIELDS}
+    upload = form.get("more_photo")
+    data = await upload.read() if upload and hasattr(upload, "read") else b""
+    return await run_in_threadpool(_scan_more_sync, request, form_values, data)
+
+
+def _scan_more_sync(request: Request, form_values: dict, data: bytes):
+    if not data or len(data) > SCAN_MAX_BYTES:
+        return _new_item_page(request, form_values, "No photo came through. Try again.")
+    try:
+        img = _open_scan_image(data)
+    except Exception as e:
+        print(f"[SCAN] could not open extra photo: {e}")
+        return _new_item_page(request, form_values, "That photo could not be opened. Try again.")
+    if not str(form_values.get("product_barcode") or "").strip():
+        form_values["product_barcode"] = decode_retail_barcode(img) or ""
+    with Session(engine) as session:
+        categories = _choices(session)[0]
+    try:
+        label = read_label_with_claude(img, categories)
+    except LabelReadError as e:
+        return _new_item_page(request, form_values, f"Could not read that photo: {e}.")
+    form_values["scan_photo"] = " ".join(filter(None, [str(form_values.get("scan_photo") or "").strip(), _save_scan_photo(img)]))
+    filled = _merge_into_form(form_values, label, only_empty=True)
+    notice = ("Added the " + ", ".join(filled) + " from the photo.") if filled else "Nothing new could be read from that photo."
+    return _new_item_page(request, form_values, notice)
 
 
 @app.post("/scan/restock/{item_id}", name="scan_restock")

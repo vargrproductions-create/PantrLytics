@@ -120,7 +120,7 @@
 
       <!-- Unit -->
       <div class="field">
-        <label class="kv-label" for="unit">Unit {% if required_fields and 'unit' in required_fields %}(REQUIRED){% endif %}</label>
+        <label class="kv-label" for="unit">Counted as (jar, bag, pack) {% if required_fields and 'unit' in required_fields %}(REQUIRED){% endif %}</label>
         <input
           class="input js-suggest"
           id="unit"
@@ -156,6 +156,13 @@
         <label class="kv-label" for="amount_left">Amount left (all packs)</label>
         <input class="input" id="amount_left" name="amount_left" type="number" min="0" step="any"
           value="{{ '%g'|format(item.amount_left) if item.amount_left is not none else '' }}">
+        <div class="js-amount-quick" style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+          <span class="muted" style="align-self:center;">Open pack:</span>
+          <button type="button" class="btn btn-secondary btn-sm" data-frac="1">Full</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-frac="0.75">¾</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-frac="0.5">½</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-frac="0.25">¼</button>
+        </div>
       </div>
 
       <!-- Condition -->

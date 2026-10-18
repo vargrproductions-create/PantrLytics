@@ -1,5 +1,17 @@
 # PantrLytics Changelog
 
+## 2026.10.18.2
+
+### Features
+- Scans fill in the **category**: Open Food Facts categories are matched to yours (for example maple syrup to Topping, lentils to Grains, Vegemite to Staples), and the label reader picks from your list when there is no match.
+- When Open Food Facts knows the product but not its size or category, the label reader fills the gaps from the same photo (with an Anthropic API key set).
+- The label reader also reads a **best-before** date and puts it in Use-by.
+- New Item from a scan has **Read size or best-before from another photo**: photograph the front or the date, and only empty fields are filled; both photos are attached.
+
+### Changes
+- "Unit" is now **Counted as (jar, bag, pack)** on New Item and Edit, so it is not mixed up with Pack unit.
+- Edit has **Full, ¾, ½, ¼** buttons for Amount left, worked out from the pack size and the number of packs (unopened packs count in full).
+
 ## 2026.10.18.1
 
 ### Features

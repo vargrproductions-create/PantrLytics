@@ -66,7 +66,7 @@
     </div>
 
     <div class="field">
-      <label>Unit {% if 'unit' in required_fields %}(REQUIRED){% endif %}</label>
+      <label>Counted as (jar, bag, pack) {% if 'unit' in required_fields %}(REQUIRED){% endif %}</label>
       <input class="input" type="text" name="unit" list="unit-list"
              value="{{ form_values.unit or 'each' }}"
              {% if 'unit' in required_fields %}required{% endif %}>
@@ -166,6 +166,14 @@
     </div>
 
     <div class="field field--full">
+      {% if form_values.scan_photo and has_label_reader %}
+      <label class="file-input" style="margin-bottom:10px;">
+        <span class="file-btn">📷 Read size or best-before from another photo</span>
+        <input class="input" type="file" name="more_photo" id="more-photo" accept="image/*" capture="environment">
+        <span class="file-name">Front of pack or the date</span>
+      </label>
+      <p class="muted" id="more-status" hidden>Reading the photo…</p>
+      {% endif %}
       <label>Photos{% if form_values.scan_photo %} (the scan photo is attached already){% endif %}</label>
       <div class="photo-input-row">
         <label class="file-input">
@@ -188,6 +196,18 @@
   </form>
 </section>
 <script>
+(function(){
+  // Extra scan photo: send the whole form to /scan/more so nothing typed is lost
+  const more = document.getElementById('more-photo');
+  if (!more) return;
+  more.addEventListener('change', function(){
+    if (!more.files || !more.files.length) return;
+    const form = more.form;
+    form.action = "{{ url_for('scan_more') }}";
+    document.getElementById('more-status').hidden = false;
+    form.submit();
+  });
+})();
 (function(){
   const sel = document.getElementById('new-origin-label-sel');
   const inp = document.getElementById('new-origin-label-val');

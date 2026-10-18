@@ -446,6 +446,20 @@
     backdrop.addEventListener('click', close);
   })();
 
+  // ── Amount left quick buttons (delegated — the edit form loads into a modal) ──
+  // Unopened packs count in full; the button sets how much of the open one is left
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.js-amount-quick button');
+    if (!btn) return;
+    const form = btn.closest('form') || document;
+    const sizeInput = form.querySelector('[name="pack_size"]');
+    const size = parseFloat(sizeInput && sizeInput.value);
+    if (!size) { if (sizeInput) sizeInput.focus(); return; }
+    const packs = parseInt((form.querySelector('[name="quantity"]') || {}).value, 10) || 1;
+    const amount = (packs - 1) * size + parseFloat(btn.dataset.frac) * size;
+    form.querySelector('[name="amount_left"]').value = Math.round(amount * 10) / 10;
+  });
+
   // ── Set-thumbnail star button (delegated — works inside modals loaded via innerHTML) ──
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.js-set-thumbnail');

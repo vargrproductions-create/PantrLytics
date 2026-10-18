@@ -90,7 +90,9 @@ class ScanTests(unittest.TestCase):
         self.assertEqual([m["name"] for m in matches], ["Imported oats"])
 
     def test_open_food_facts_prefills_form(self):
-        info = {"name": "Pearl Barley", "brand": "Macro", "pack_size": 500.0, "pack_unit": "g", "source": "Open Food Facts"}
+        self.client.post("/api/items", json={"name": "Seed grains category", "category": "Grains"})
+        info = {"name": "Pearl Barley", "brand": "Macro", "pack_size": 500.0, "pack_unit": "g",
+                "categories_tags": ["en:cereals-and-potatoes", "en:barley"], "source": "Open Food Facts"}
         with patch.object(main, "lookup_open_food_facts", return_value=info), \
              patch.object(main, "read_label_with_claude") as claude:
             page = self._scan(ean_png("931234567890")).text
@@ -99,6 +101,7 @@ class ScanTests(unittest.TestCase):
         self.assertIn('value="Pearl Barley"', page)
         self.assertIn('value="500"', page)
         self.assertIn('value="9312345678907"', page)
+        self.assertIn('value="Grains"', page)
         self.assertIn('name="scan_photo" value="', page)
 
     def test_open_food_facts_miss_without_key_gives_manual_form(self):
@@ -109,7 +112,8 @@ class ScanTests(unittest.TestCase):
         self.assertIn("Create Item", page)
 
     def test_claude_reads_label_when_no_barcode(self):
-        payload = {"name": "Tapioca pearls", "brand": "McKenzie's", "pack_size": 375, "pack_unit": "g", "barcode": ""}
+        payload = {"name": "Tapioca pearls", "brand": "McKenzie's", "pack_size": 375, "pack_unit": "g", "barcode": "",
+                   "best_before": "2027-03-01", "category": ""}
         fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
              patch("anthropic.Anthropic", return_value=fake):
@@ -117,6 +121,55 @@ class ScanTests(unittest.TestCase):
         self.assertIn("Filled in from the label photo", page)
         self.assertIn('value="Tapioca pearls"', page)
         self.assertIn('value="375"', page)
+        self.assertIn('value="2027-03-01"', page)
+        self.assertIn("Read size or best-before from another photo", page)
+
+    def test_category_mapping(self):
+        cats = ["Grains", "Staples", "Topping", "Frozen Meal"]
+        self.assertEqual(main.category_from_off(["en:maple"], cats), "Topping")
+        self.assertEqual(main.category_from_off(["en:plant-based-foods", "en:yeast-extract-spreads"], cats), "Staples")
+        self.assertEqual(main.category_from_off(["en:legumes", "en:lentils"], cats), "Grains")
+        self.assertIsNone(main.category_from_off(["en:maple"], ["Grains"]))
+        self.assertIsNone(main.category_from_off([], cats))
+
+    def test_label_photo_fills_size_missing_from_database(self):
+        info = {"name": "Kirkland Signature Maple Syrup", "brand": "Kirkland", "pack_size": None, "pack_unit": None,
+                "categories_tags": ["en:maple"], "source": "Open Food Facts"}
+        payload = {"name": "Maple syrup", "brand": "Kirkland", "pack_size": 1000, "pack_unit": "ml", "barcode": "",
+                   "best_before": "", "category": ""}
+        fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch.object(main, "lookup_open_food_facts", return_value=info), \
+             patch("anthropic.Anthropic", return_value=fake):
+            page = self._scan(ean_png("009661985512")).text
+        self.assertIn("Filled in from Open Food Facts and the label photo", page)
+        self.assertIn('value="Kirkland Signature Maple Syrup"', page)
+        self.assertIn('value="1000"', page)
+        self.assertIn('value="ml"', page)
+
+    def test_more_photo_fills_only_empty_fields_and_keeps_both_photos(self):
+        first = main._save_scan_photo(main.Image.new("RGB", (50, 50), "white"))
+        payload = {"name": "Something else", "brand": "", "pack_size": 750, "pack_unit": "g", "barcode": "",
+                   "best_before": "2027-05-30", "category": ""}
+        fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
+        form = {"name": "Rolled oats", "quantity": "1", "unit": "bag", "location": "Pantry", "notes": "mine",
+                "product_barcode": "9300000000028", "scan_photo": first}
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch("anthropic.Anthropic", return_value=fake):
+            page = self.client.post("/scan/more", data=form, files={"more_photo": ("front.png", blank_png(), "image/png")}).text
+        self.assertIn("Added the size, best-before date from the photo", page)
+        self.assertIn('value="Rolled oats"', page)
+        self.assertIn('value="750"', page)
+        self.assertIn('value="2027-05-30"', page)
+        token_field = page.split('name="scan_photo" value="')[1].split('"')[0]
+        tokens = token_field.split()
+        self.assertEqual(len(tokens), 2)
+        self.assertEqual(tokens[0], first)
+        resp = self.client.post("/new", data={**form, "pack_size": "750", "pack_unit": "g", "scan_photo": token_field},
+                                follow_redirects=False)
+        item_id = int(resp.headers["location"].rstrip("/").split("/")[-1])
+        with Session(main.engine) as session:
+            photos = session.exec(select(main.ItemPhoto).where(main.ItemPhoto.item_id == item_id)).all()
+        self.assertEqual(sorted(os.path.basename(p.path) for p in photos), sorted(tokens))
 
     def test_claude_refusal_falls_back_to_manual_form(self):
         fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(
