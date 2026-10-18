@@ -138,6 +138,26 @@
         </datalist>
       </div>
 
+      <!-- Pack size (pantry stock) -->
+      <div class="field">
+        <label class="kv-label" for="pack_size">Pack size</label>
+        <input class="input" id="pack_size" name="pack_size" type="number" min="0" step="any"
+          value="{{ '%g'|format(item.pack_size) if item.pack_size is not none else '' }}">
+      </div>
+
+      <!-- Pack unit -->
+      <div class="field">
+        <label class="kv-label" for="pack_unit">Pack unit (g, ml, each)</label>
+        <input class="input" id="pack_unit" name="pack_unit" type="text" value="{{ item.pack_unit or '' }}">
+      </div>
+
+      <!-- Amount left across all packs -->
+      <div class="field">
+        <label class="kv-label" for="amount_left">Amount left (all packs)</label>
+        <input class="input" id="amount_left" name="amount_left" type="number" min="0" step="any"
+          value="{{ '%g'|format(item.amount_left) if item.amount_left is not none else '' }}">
+      </div>
+
       <!-- Condition -->
       <div class="field">
         <label class="kv-label" for="condition">Condition {% if required_fields and 'condition' in required_fields %}(REQUIRED){% endif %}</label>

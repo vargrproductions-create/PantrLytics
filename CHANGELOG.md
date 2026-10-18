@@ -1,5 +1,13 @@
 # PantrLytics Changelog
 
+## 2026.10.18
+
+### Features
+- Pantry stock fields: pack size, pack unit, amount left (the total across all packs) and the date that amount was last checked, plus the Woolworths stockcode and product barcode. They show on the item page when set, can be edited on the edit form, and are included in CSV export and import.
+- `POST /api/items` accepts the new fields; amount left defaults to pack size times quantity.
+- `GET /api/items/lookup` finds items by stockcode, product barcode or exact name, active items first.
+- `POST /api/items/{id}/restock` adds bought packs and their amount. A depleted item comes back with only the new packs.
+
 ## 2026.10.08.3
 
 ### Bug Fixes

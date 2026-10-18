@@ -50,6 +50,10 @@
         <div><span class="kv-label">Category</span><span class="kv-value">{{ item.category or "—" }}</span></div>
         <div><span class="kv-label">Bin</span><span class="kv-value">{{ item.bin_number or "—" }}</span></div>
         <div><span class="kv-label">Qty</span><span class="kv-value">{{ item.quantity }} {{ item.unit or "" }}</span></div>
+        {% if item.pack_size is not none or item.amount_left is not none %}
+        <div><span class="kv-label">Pack size</span><span class="kv-value">{{ '%g'|format(item.pack_size) if item.pack_size is not none else "—" }} {{ item.pack_unit or "" }}</span></div>
+        <div><span class="kv-label">Amount left</span><span class="kv-value">{{ '%g'|format(item.amount_left) if item.amount_left is not none else "—" }} {{ item.pack_unit or "" }}</span></div>
+        {% endif %}
         <div><span class="kv-label">Location</span><span class="kv-value">{{ item.location or "—" }}</span></div>
         <div><span class="kv-label">Condition</span><span class="kv-value">{{ item.condition or "—" }}</span></div>
         <div><span class="kv-label">{{ item.origin_date_label or "Cooked On" }}</span><span class="kv-value">{{ item.origin_date or "—" }}</span></div>

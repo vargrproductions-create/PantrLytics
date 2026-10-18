@@ -44,7 +44,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.08.3"
+APP_VERSION = "2026.10.18"
 APP_INTERNAL_PORT = 8099
 
 
@@ -256,6 +256,14 @@ class Item(SQLModel, table=True):
     depleted_reason: Optional[str] = None
     depleted_qty: Optional[int] = None
 
+    # Pantry stock: quantity counts packs; amount_left is the total across them
+    pack_size: Optional[float] = None  # amount in one pack, in pack_unit
+    pack_unit: Optional[str] = None  # e.g. g, ml, each
+    amount_left: Optional[float] = None
+    amount_checked_at: Optional[str] = None  # date amount_left was last known true; restocks add on without moving it
+    stockcode: Optional[str] = None  # Woolworths stockcode
+    product_barcode: Optional[str] = None  # manufacturer EAN/UPC
+
     created_at: str = Field(
         default_factory=lambda: dt.datetime.utcnow().isoformat()
     )
@@ -439,6 +447,12 @@ EXPORTABLE_FIELDS = [
     {"key": "depleted_at", "label": "Depleted at"},
     {"key": "depleted_reason", "label": "Depletion reason"},
     {"key": "depleted_qty", "label": "Depleted qty"},
+    {"key": "pack_size", "label": "Pack size"},
+    {"key": "pack_unit", "label": "Pack unit"},
+    {"key": "amount_left", "label": "Amount left"},
+    {"key": "amount_checked_at", "label": "Amount checked at"},
+    {"key": "stockcode", "label": "Stockcode"},
+    {"key": "product_barcode", "label": "Product barcode"},
     {"key": "created_at", "label": "Created at"},
 ]
 EXPORTABLE_FIELD_KEYS = [f["key"] for f in EXPORTABLE_FIELDS]
@@ -476,6 +490,12 @@ def init_db():
         ensure_column(conn, "item", "depleted_qty", "INTEGER")
         ensure_column(conn, "item", "origin_date", "VARCHAR")
         ensure_column(conn, "item", "origin_date_label", "VARCHAR")
+        ensure_column(conn, "item", "pack_size", "FLOAT")
+        ensure_column(conn, "item", "pack_unit", "VARCHAR")
+        ensure_column(conn, "item", "amount_left", "FLOAT")
+        ensure_column(conn, "item", "amount_checked_at", "VARCHAR")
+        ensure_column(conn, "item", "stockcode", "VARCHAR")
+        ensure_column(conn, "item", "product_barcode", "VARCHAR")
 
         # ensure created_at on supporting tables
         for tbl in ("category", "bin", "location", "usewithin"):
@@ -1594,6 +1614,16 @@ def _log_port_notice():
         ensure_units_from_items(session)
         _log_unit_snapshot(session, label="startup")
 
+def _to_float(v) -> float | None:
+    """Parse an optional number; blank or invalid gives None."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
 def _norm(s: str | None) -> str | None:
     if s is None:
         return None
@@ -2641,6 +2671,12 @@ async def import_csv(request: Request, file: UploadFile = File(...)):
                 depleted_at=_val(row, "depleted_at"),
                 depleted_reason=_val(row, "depleted_reason"),
                 depleted_qty=depleted_qty,
+                pack_size=_to_float(_val(row, "pack_size")),
+                pack_unit=_val(row, "pack_unit"),
+                amount_left=_to_float(_val(row, "amount_left")),
+                amount_checked_at=_val(row, "amount_checked_at"),
+                stockcode=_val(row, "stockcode"),
+                product_barcode=_val(row, "product_barcode"),
                 created_at=_val(row, "created_at") or dt.datetime.utcnow().isoformat(),
             )
             session.add(item)
@@ -4395,6 +4431,9 @@ async def edit_item_submit(
     use_within: str = Form(""),
     notes: str = Form(""),
     review_window_days: Optional[str] = Form(None),
+    pack_size: Optional[str] = Form(None),
+    pack_unit: Optional[str] = Form(None),
+    amount_left: Optional[str] = Form(None),
     photos: List[UploadFile] = File([]),
 ):
     # Pydantic v2 won't coerce empty string "" to None for Optional[int], so
@@ -4500,6 +4539,16 @@ async def edit_item_submit(
         item.use_within = use_within or None
         item.notes = notes or None
         item.review_window_days = _rwd
+        # Older clients that don't send the pack fields leave them untouched
+        if pack_size is not None:
+            item.pack_size = _to_float(pack_size)
+        if pack_unit is not None:
+            item.pack_unit = _norm(pack_unit) or None
+        if amount_left is not None:
+            new_amount = _to_float(amount_left)
+            if new_amount != item.amount_left:
+                item.amount_left = new_amount
+                item.amount_checked_at = dt.date.today().isoformat() if new_amount is not None else None
         item.last_audit_date = dt.date.today().isoformat()
         session.add(item)
         session.commit()
@@ -5321,6 +5370,37 @@ def api_items_expiring(days: int = 7, max_items: int = 25):
     return JSONResponse(result[:max_items])
 
 
+@app.get("/api/items/lookup")
+def api_lookup_items(stockcode: str = "", product_barcode: str = "", name: str = ""):
+    """Find items by Woolworths stockcode, product barcode or exact name (case-insensitive)."""
+    stockcode = _norm(stockcode) or ""
+    product_barcode = _norm(product_barcode) or ""
+    name = (_norm(name) or "").lower()
+    if not (stockcode or product_barcode or name):
+        return JSONResponse({"ok": False, "error": "stockcode, product_barcode or name is required"}, status_code=400)
+    with Session(engine) as session:
+        matches = []
+        for item in session.exec(select(Item)).all():
+            if (
+                (stockcode and item.stockcode == stockcode)
+                or (product_barcode and item.product_barcode == product_barcode)
+                or (name and (item.name or "").strip().lower() == name)
+            ):
+                matches.append({
+                    "id": item.id,
+                    "serial_number": item.serial_number,
+                    "name": item.name,
+                    "quantity": item.quantity,
+                    "unit": item.unit,
+                    "location": item.location,
+                    "depleted_at": item.depleted_at,
+                    **_stock_fields(item),
+                })
+    # Active items first, so a re-buy tops up the row still in the cupboard
+    matches.sort(key=lambda m: m["depleted_at"] is not None)
+    return JSONResponse({"ok": True, "matches": matches})
+
+
 @app.get("/api/items/{item_id}")
 def api_get_item(item_id: int):
     with Session(engine) as session:
@@ -5337,7 +5417,73 @@ def api_get_item(item_id: int):
         "location": item.location,
         "use_by_date": item.use_by_date,
         "depleted_at": item.depleted_at,
+        **_stock_fields(item),
     })
+
+
+def _stock_fields(item: Item) -> dict:
+    return {
+        "pack_size": item.pack_size,
+        "pack_unit": item.pack_unit,
+        "amount_left": item.amount_left,
+        "amount_checked_at": item.amount_checked_at,
+        "stockcode": item.stockcode,
+        "product_barcode": item.product_barcode,
+    }
+
+
+@app.post("/api/items/{item_id}/restock")
+async def api_restock_item(item_id: int, request: Request):
+    """Add bought packs to an item; a depleted item comes back with just the new packs."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+    try:
+        packs = int(body.get("packs", 1))
+    except (ValueError, TypeError):
+        return JSONResponse({"ok": False, "error": "packs must be a whole number"}, status_code=400)
+    if packs < 1:
+        return JSONResponse({"ok": False, "error": "packs must be at least 1"}, status_code=400)
+
+    with Session(engine) as session:
+        item = session.get(Item, item_id)
+        if not item:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        pack_size = _to_float(body.get("pack_size"))
+        if pack_size is not None:
+            item.pack_size = pack_size
+        if _norm(body.get("pack_unit")):
+            item.pack_unit = _norm(body.get("pack_unit"))
+        for key in ("stockcode", "product_barcode"):
+            if _norm(body.get(key)):
+                setattr(item, key, _norm(body.get(key)))
+
+        if item.depleted_at:
+            item.depleted_at = None
+            item.depleted_reason = None
+            item.depleted_qty = None
+            item.quantity = packs
+            item.amount_left = None
+            item.amount_checked_at = None
+            base_amount = 0.0
+        else:
+            item.quantity = (item.quantity or 0) + packs
+            base_amount = item.amount_left
+        if item.pack_size is not None and base_amount is not None:
+            item.amount_left = base_amount + packs * item.pack_size
+            # A revived item is fully known now; otherwise keep the earlier anchor
+            if item.amount_checked_at is None:
+                item.amount_checked_at = dt.date.today().isoformat()
+        if _norm(body.get("purchased_on")):
+            item.origin_date = _norm(body.get("purchased_on"))
+            item.origin_date_label = "Purchased On"
+        item.last_audit_date = dt.date.today().isoformat()
+        session.add(item)
+        session.commit()
+        session.refresh(item)
+        result = {"ok": True, "item_id": item.id, "quantity": item.quantity, **_stock_fields(item)}
+    return JSONResponse(result)
 
 
 @app.get("/api/form-data")
@@ -5388,6 +5534,13 @@ async def api_create_item(request: Request):
             quantity = int(quantity)
         except (ValueError, TypeError):
             quantity = 1
+    pack_size = _to_float(body.get("pack_size"))
+    pack_unit = _norm(body.get("pack_unit", "")) or None
+    amount_left = _to_float(body.get("amount_left"))
+    if amount_left is None and pack_size is not None:
+        amount_left = pack_size * quantity
+    stockcode = _norm(body.get("stockcode", "")) or None
+    product_barcode = _norm(body.get("product_barcode", "")) or None
     review_window_days = None
     rwd_raw = body.get("review_window_days")
     if rwd_raw is not None:
@@ -5447,6 +5600,12 @@ async def api_create_item(request: Request):
             photo_path=None,
             last_audit_date=dt.date.today().isoformat(),
             review_window_days=review_window_days,
+            pack_size=pack_size,
+            pack_unit=pack_unit,
+            amount_left=amount_left,
+            amount_checked_at=dt.date.today().isoformat() if amount_left is not None else None,
+            stockcode=stockcode,
+            product_barcode=product_barcode,
         )
         session.add(item)
         session.commit()
