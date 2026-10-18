@@ -1,5 +1,13 @@
 # PantrLytics Changelog
 
+## 2026.10.18.3
+
+### Bug Fixes
+- Scans now set **Counted as** from the container in the photo (jar, bottle, bag, box, can, packet, tub, tube, carton, pouch) instead of always "pack".
+- Best-before dates printed as a month and year (for example 05/2027) are kept, using the last day of the month; day-first and year-first dates are read too. Previously only a full date survived.
+- With an API key set, the label reader runs on every scan, so the best-before date and container are read even when Open Food Facts already knows the product.
+- New Item has an **Amount left** field with the Full, ¾, ½, ¼ buttons; left blank, it is still worked out from the pack size.
+
 ## 2026.10.18.2
 
 ### Features

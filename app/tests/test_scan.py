@@ -113,7 +113,7 @@ class ScanTests(unittest.TestCase):
 
     def test_claude_reads_label_when_no_barcode(self):
         payload = {"name": "Tapioca pearls", "brand": "McKenzie's", "pack_size": 375, "pack_unit": "g", "barcode": "",
-                   "best_before": "2027-03-01", "category": ""}
+                   "best_before": "2027-03-01", "category": "", "container": "packet"}
         fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
              patch("anthropic.Anthropic", return_value=fake):
@@ -122,7 +122,41 @@ class ScanTests(unittest.TestCase):
         self.assertIn('value="Tapioca pearls"', page)
         self.assertIn('value="375"', page)
         self.assertIn('value="2027-03-01"', page)
+        self.assertIn('value="packet"', page)
         self.assertIn("Read size or best-before from another photo", page)
+
+    def test_best_before_formats(self):
+        self.assertEqual(main._iso_date_or_none("2027-05-14"), "2027-05-14")
+        self.assertEqual(main._iso_date_or_none("2027-05"), "2027-05-31")
+        self.assertEqual(main._iso_date_or_none("05/2027"), "2027-05-31")
+        self.assertEqual(main._iso_date_or_none("14/05/27"), "2027-05-14")
+        self.assertEqual(main._iso_date_or_none("2027/05/14"), "2027-05-14")
+        self.assertIsNone(main._iso_date_or_none(""))
+        self.assertIsNone(main._iso_date_or_none("31/02/2027"))
+
+    def test_reader_runs_with_key_even_when_database_is_complete(self):
+        info = {"name": "Vegemite", "brand": "Vegemite", "pack_size": 600.0, "pack_unit": "g",
+                "categories_tags": ["en:yeast-extract-spreads"], "source": "Open Food Facts"}
+        self.client.post("/api/items", json={"name": "Seed staples", "category": "Staples"})
+        payload = {"name": "Yeast spread", "brand": "", "pack_size": 0, "pack_unit": "", "barcode": "",
+                   "best_before": "2027-08", "category": "", "container": "jar"}
+        fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch.object(main, "lookup_open_food_facts", return_value=info), \
+             patch("anthropic.Anthropic", return_value=fake):
+            page = self._scan(ean_png("930065065861")).text
+        self.assertIn('value="Vegemite"', page)
+        self.assertIn('value="600"', page)
+        self.assertIn('value="2027-08-31"', page)
+        self.assertIn('value="jar"', page)
+        self.assertIn('name="amount_left"', page)
+
+    def test_new_item_amount_left_override(self):
+        resp = self.client.post("/new", data={"name": "Half jar honey", "quantity": "1", "unit": "jar",
+                                              "pack_size": "500", "pack_unit": "g", "amount_left": "250"},
+                                follow_redirects=False)
+        item_id = int(resp.headers["location"].rstrip("/").split("/")[-1])
+        self.assertEqual(self.client.get(f"/api/items/{item_id}").json()["amount_left"], 250)
 
     def test_category_mapping(self):
         cats = ["Grains", "Staples", "Topping", "Frozen Meal"]
@@ -136,7 +170,7 @@ class ScanTests(unittest.TestCase):
         info = {"name": "Kirkland Signature Maple Syrup", "brand": "Kirkland", "pack_size": None, "pack_unit": None,
                 "categories_tags": ["en:maple"], "source": "Open Food Facts"}
         payload = {"name": "Maple syrup", "brand": "Kirkland", "pack_size": 1000, "pack_unit": "ml", "barcode": "",
-                   "best_before": "", "category": ""}
+                   "best_before": "", "category": "", "container": "bottle"}
         fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
              patch.object(main, "lookup_open_food_facts", return_value=info), \
@@ -146,11 +180,12 @@ class ScanTests(unittest.TestCase):
         self.assertIn('value="Kirkland Signature Maple Syrup"', page)
         self.assertIn('value="1000"', page)
         self.assertIn('value="ml"', page)
+        self.assertIn('value="bottle"', page)
 
     def test_more_photo_fills_only_empty_fields_and_keeps_both_photos(self):
         first = main._save_scan_photo(main.Image.new("RGB", (50, 50), "white"))
         payload = {"name": "Something else", "brand": "", "pack_size": 750, "pack_unit": "g", "barcode": "",
-                   "best_before": "2027-05-30", "category": ""}
+                   "best_before": "2027-05-30", "category": "", "container": "bag"}
         fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
         form = {"name": "Rolled oats", "quantity": "1", "unit": "bag", "location": "Pantry", "notes": "mine",
                 "product_barcode": "9300000000028", "scan_photo": first}

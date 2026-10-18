@@ -46,7 +46,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.18.2"
+APP_VERSION = "2026.10.18.3"
 APP_INTERNAL_PORT = 8099
 
 
@@ -3139,6 +3139,7 @@ def items_updated_at():
 SCAN_MAX_BYTES = 25 * 1024 * 1024
 SCAN_PHOTO_RE = re.compile(r"^\d+_[0-9a-f]{32}\.jpg$")
 LABEL_MODEL = "claude-opus-5-5"
+CONTAINER_TYPES = ["jar", "bottle", "bag", "box", "can", "packet", "tub", "tube", "carton", "pouch"]
 def _label_schema(categories: list[str]) -> dict:
     return {
         "type": "object",
@@ -3148,10 +3149,11 @@ def _label_schema(categories: list[str]) -> dict:
             "pack_size": {"type": "number", "description": "Net amount in one pack in pack_unit, 0 if not shown"},
             "pack_unit": {"type": "string", "enum": ["g", "ml", "each", ""]},
             "barcode": {"type": "string", "description": "Digits printed under the barcode if legible, else empty"},
-            "best_before": {"type": "string", "description": "Best-before or use-by date printed on the pack as YYYY-MM-DD (Australian dates are day first), else empty"},
+            "best_before": {"type": "string", "description": "Best-before or use-by date printed on the pack as YYYY-MM-DD. Australian dates are day first (05/03/27 is 5 March 2027). If only a month and year are printed, give the last day of that month. Empty if no date is visible."},
+            "container": {"type": "string", "enum": CONTAINER_TYPES + [""], "description": "What the product comes in, or empty if unclear"},
             "category": {"type": "string", "enum": list(categories) + [""], "description": "The closest of these categories, or empty if none fits"},
         },
-        "required": ["name", "brand", "pack_size", "pack_unit", "barcode", "best_before", "category"],
+        "required": ["name", "brand", "pack_size", "pack_unit", "barcode", "best_before", "category", "container"],
         "additionalProperties": False,
     }
 
@@ -3300,15 +3302,37 @@ def read_label_with_claude(img: Image.Image, categories: list[str] | None = None
         "barcode": normalize_barcode(data.get("barcode")),
         "best_before": _iso_date_or_none(data.get("best_before")),
         "category": data.get("category") or None,
+        "container": data.get("container") or None,
         "source": "the label photo",
     }
 
 
 def _iso_date_or_none(v) -> str | None:
+    """Accept YYYY-MM-DD, YYYY-MM (end of month), or day-first DD/MM/YY(YY) and MM/YY(YY)."""
+    import calendar
+    text = (v or "").strip()
+    if not text:
+        return None
     try:
-        return dt.date.fromisoformat((v or "").strip()).isoformat()
+        return dt.date.fromisoformat(text).isoformat()
+    except ValueError:
+        pass
+    parts = [int(x) for x in re.findall(r"\d+", text)]
+    try:
+        if re.fullmatch(r"\d{4}-\d{1,2}", text):
+            year, month = parts
+            return dt.date(year, month, calendar.monthrange(year, month)[1]).isoformat()
+        if len(parts) == 3:
+            day, month, year = parts if parts[0] <= 31 else parts[::-1]
+            year += 2000 if year < 100 else 0
+            return dt.date(year, month, day).isoformat()
+        if len(parts) == 2:
+            month, year = parts
+            year += 2000 if year < 100 else 0
+            return dt.date(year, month, calendar.monthrange(year, month)[1]).isoformat()
     except ValueError:
         return None
+    return None
 
 
 def _save_scan_photo(img: Image.Image) -> str:
@@ -3383,8 +3407,8 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
     if info:
         info["category"] = category_from_off(info.get("categories_tags"), categories)
     notice = ""
-    # Ask Claude when the database had nothing, or left the size or category blank
-    if not info or not info.get("pack_size") or not info.get("category"):
+    # With a key, always read the photo too: the database never has the best-before date or container
+    if not info or not info.get("pack_size") or not info.get("category") or _anthropic_api_key():
         try:
             label = read_label_with_claude(img, categories)
         except LabelReadError as e:
@@ -3398,7 +3422,7 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
                 if match:
                     return _scan_page(request, match=match, barcode=barcode)
         if label and info:
-            for key in ("pack_size", "pack_unit", "category", "best_before"):
+            for key in ("pack_size", "pack_unit", "category", "best_before", "container"):
                 if not info.get(key) and label.get(key):
                     info[key] = label[key]
             info["source"] = "Open Food Facts and the label photo"
@@ -3427,7 +3451,7 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
 NEW_ITEM_FIELDS = (
     "name", "category", "tags", "location", "bin_number", "quantity", "unit", "condition",
     "origin_date", "origin_date_label", "use_by_date", "use_within", "notes", "review_window_days",
-    "pack_size", "pack_unit", "product_barcode", "scan_photo",
+    "pack_size", "pack_unit", "product_barcode", "amount_left", "scan_photo",
 )
 
 
@@ -3440,12 +3464,16 @@ def _merge_into_form(form_values: dict, info: dict, only_empty: bool) -> list[st
         "category": info.get("category") or "",
         "use_by_date": info.get("best_before") or "",
         "notes": f"Brand: {info['brand']}" if info.get("brand") else "",
+        "unit": info.get("container") or "",
     }
     labels = {"name": "name", "pack_size": "size", "pack_unit": "size", "category": "category",
-              "use_by_date": "best-before date", "notes": "brand"}
+              "use_by_date": "best-before date", "notes": "brand", "unit": "container"}
     filled = []
     for key, value in found.items():
-        if value and (not only_empty or not str(form_values.get(key) or "").strip()):
+        current = str(form_values.get(key) or "").strip()
+        if key == "unit" and current == "pack":
+            current = ""  # the scan default, not something typed
+        if value and (not only_empty or not current):
             form_values[key] = value
             if labels[key] not in filled:
                 filled.append(labels[key])
@@ -3543,6 +3571,7 @@ async def new_item(
     pack_size: str = Form(""),
     pack_unit: str = Form(""),
     product_barcode: str = Form(""),
+    amount_left: str = Form(""),
     scan_photo: str = Form(""),
     photos: List[UploadFile] = File([]),
 ):
@@ -3656,6 +3685,7 @@ async def new_item(
                     "pack_size": pack_size,
                     "pack_unit": pack_unit,
                     "product_barcode": product_barcode,
+                    "amount_left": amount_left,
                     "scan_photo": scan_photo,
                 },
             },
@@ -3694,8 +3724,10 @@ async def new_item(
             pack_unit=_norm(pack_unit) or None,
             product_barcode=normalize_barcode(product_barcode),
         )
-        if item.pack_size is not None:
+        item.amount_left = _to_float(amount_left)
+        if item.amount_left is None and item.pack_size is not None:
             item.amount_left = item.pack_size * quantity
+        if item.amount_left is not None:
             item.amount_checked_at = dt.date.today().isoformat()
         session.add(item)
         session.commit()

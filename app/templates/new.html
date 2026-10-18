@@ -160,6 +160,20 @@
     </div>
 
     <div class="field">
+      <label>Amount left (all packs)</label>
+      <input class="input" type="number" min="0" step="any" name="amount_left"
+             placeholder="Full packs unless you change it"
+             value="{{ form_values.amount_left or '' }}">
+      <div class="js-amount-quick" style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+        <span class="muted" style="align-self:center;">Open pack:</span>
+        <button type="button" class="btn btn-secondary btn-sm" data-frac="1">Full</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-frac="0.75">¾</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-frac="0.5">½</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-frac="0.25">¼</button>
+      </div>
+    </div>
+
+    <div class="field">
       <label>Product barcode</label>
       <input class="input" type="text" inputmode="numeric" name="product_barcode"
              value="{{ form_values.product_barcode or '' }}">
