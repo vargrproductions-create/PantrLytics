@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+{% block title %}Scan · Inventory & Labels{% endblock %}
+{% block content %}
+<section class="card">
+  <h2 class="card-title">Scan a product</h2>
+
+  {% if error %}
+    <div class="alert-expiry danger">{{ error }}</div>
+  {% endif %}
+
+  {% if match %}
+    <div class="alert-expiry ok">Already in PantrLytics: <strong>{{ match.name }}</strong>
+      ({{ match.quantity }} {{ match.unit or "" }}{% if match.depleted_at %}, used up{% endif %}).</div>
+    <div class="actions" style="margin-top:12px;">
+      <form method="post" action="{{ url_for('scan_restock', item_id=match.id) }}" style="display:inline;">
+        <input type="hidden" name="product_barcode" value="{{ barcode or '' }}">
+        <button class="btn" type="submit">Add 1 pack</button>
+      </form>
+      <a class="btn btn-secondary" href="{{ url_for('show_item', item_id=match.id) }}">Open item</a>
+      <a class="btn btn-secondary" href="{{ url_for('scan_page') }}">Scan another</a>
+    </div>
+  {% else %}
+    <p class="muted">Take a photo of the barcode, close enough that it fills about a third of the picture. If there is no barcode, photograph the front of the pack{% if not has_label_reader %} (reading the label needs an Anthropic API key in the add-on configuration){% endif %}.</p>
+    <form id="scan-form" method="post" action="{{ url_for('scan_submit') }}" enctype="multipart/form-data">
+      <div class="photo-input-row">
+        <label class="file-input">
+          <span class="file-btn">📷 Take photo</span>
+          <input class="input" id="scan-photo" type="file" name="photo" accept="image/*" capture="environment">
+          <span class="file-name">Camera</span>
+        </label>
+        <label class="file-input">
+          <span class="file-btn">🖼 Choose file</span>
+          <input class="input" type="file" name="photo" accept="image/*" id="scan-file">
+          <span class="file-name">From photos</span>
+        </label>
+      </div>
+      <p class="muted" id="scan-status" hidden>Reading the photo…</p>
+    </form>
+  {% endif %}
+</section>
+<script>
+(function(){
+  const form = document.getElementById('scan-form');
+  if (!form) return;
+  const inputs = [document.getElementById('scan-photo'), document.getElementById('scan-file')];
+  inputs.forEach(function(input){
+    if (!input) return;
+    input.addEventListener('change', function(){
+      if (!input.files || !input.files.length) return;
+      // Send only the input that was used
+      inputs.forEach(function(other){ if (other && other !== input) other.disabled = true; });
+      document.getElementById('scan-status').hidden = false;
+      form.submit();
+    });
+  });
+})();
+</script>
+{% endblock %}

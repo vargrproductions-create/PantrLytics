@@ -63,6 +63,7 @@
         <nav class="nav" id="main-nav" style="flex-wrap:wrap; gap:22px; padding-left:0; font-size:17px;">
           <a href="{{ url_for('index') }}">All Items</a>
           <a href="{{ url_for('new_item') }}">New Item</a>
+          <a href="{{ url_for('scan_page') }}">Scan</a>
           <a href="{{ url_for('label_designer') }}">Designer</a>
           <a href="{{ url_for('reports') }}">Reports</a>
           <a href="{{ url_for('review_page') }}">Review</a>
@@ -98,9 +99,9 @@
         <span class="bottom-nav-icon">＋</span>
         <span class="bottom-nav-label">New</span>
       </a>
-      <a class="bottom-nav-item" href="{{ url_for('label_designer') }}">
-        <span class="bottom-nav-icon">🏷</span>
-        <span class="bottom-nav-label">Designer</span>
+      <a class="bottom-nav-item" href="{{ url_for('scan_page') }}">
+        <span class="bottom-nav-icon">📷</span>
+        <span class="bottom-nav-label">Scan</span>
       </a>
       <a class="bottom-nav-item" href="{{ url_for('reports') }}">
         <span class="bottom-nav-icon">📊</span>
@@ -118,6 +119,7 @@
     <div class="bottom-sheet-backdrop" id="bottom-sheet-backdrop"></div>
     <div class="bottom-sheet-content">
       <div class="bottom-sheet-handle"></div>
+      <a class="bottom-sheet-item" href="{{ url_for('label_designer') }}">🏷 Designer</a>
       <a class="bottom-sheet-item" href="{{ url_for('review_page') }}">🔍 Review Items</a>
       <a class="bottom-sheet-item" href="{{ url_for('admin') }}">⚙ Admin &amp; Settings</a>
       <a class="bottom-sheet-item" href="{{ url_for('backup_page') }}">💾 Backup</a>

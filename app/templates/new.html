@@ -7,8 +7,12 @@
   {% if error %}
     <div class="alert alert-error">{{ error }}</div>
   {% endif %}
+  {% if scan_notice %}
+    <div class="alert-expiry ok">{{ scan_notice }}</div>
+  {% endif %}
 
-  <form class="form-grid js-validate-required" method="post" enctype="multipart/form-data">
+  <form class="form-grid js-validate-required" method="post" action="{{ url_for('new_item') }}" enctype="multipart/form-data">
+    <input type="hidden" name="scan_photo" value="{{ form_values.scan_photo or '' }}">
     <div class="field">
       <label>Name {% if 'name' in required_fields %}(REQUIRED){% endif %}</label>
       <input class="input" type="text" name="name"
@@ -143,8 +147,26 @@
       >{{ form_values.notes or "" }}</textarea>
     </div>
 
+    <div class="field">
+      <label>Pack size</label>
+      <input class="input" type="number" min="0" step="any" name="pack_size"
+             value="{{ form_values.pack_size or '' }}">
+    </div>
+
+    <div class="field">
+      <label>Pack unit (g, ml, each)</label>
+      <input class="input" type="text" name="pack_unit"
+             value="{{ form_values.pack_unit or '' }}">
+    </div>
+
+    <div class="field">
+      <label>Product barcode</label>
+      <input class="input" type="text" inputmode="numeric" name="product_barcode"
+             value="{{ form_values.product_barcode or '' }}">
+    </div>
+
     <div class="field field--full">
-      <label>Photos</label>
+      <label>Photos{% if form_values.scan_photo %} (the scan photo is attached already){% endif %}</label>
       <div class="photo-input-row">
         <label class="file-input">
           <span class="file-btn">📷 Take photo</span>

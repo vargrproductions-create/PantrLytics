@@ -1,5 +1,6 @@
 import os, io, subprocess, tempfile, hashlib
 import zipfile
+import re
 import threading
 import time
 import signal
@@ -44,7 +45,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.18"
+APP_VERSION = "2026.10.18.1"
 APP_INTERNAL_PORT = 8099
 
 
@@ -108,6 +109,18 @@ def merged_config():
 
 
 config = merged_config()
+
+# Add-on options that must never leave the box (backups, pages, JSON)
+SECRET_OPTION_KEYS = {"anthropic_api_key"}
+
+
+def _options_without_secrets(opts: dict) -> dict:
+    return {k: v for k, v in opts.items() if k not in SECRET_OPTION_KEYS}
+
+
+def _anthropic_api_key() -> str:
+    """Key for the label-reading fallback; env wins for local dev."""
+    return (os.environ.get("ANTHROPIC_API_KEY") or load_options().get("anthropic_api_key") or "").strip()
 BASE_URL = config["base_url"].rstrip("/")  # used for QR/links
 IPP_HOST = config["ipp_host"]
 IPP_PRINTER = config["ipp_printer"]
@@ -1249,7 +1262,7 @@ def create_backup_zip(opts: dict, session: Session, target_dir: str | None = Non
             zf.writestr("export.csv", csv_bytes)
 
         if opts.get("include_config") and os.path.isfile(ADDON_OPTIONS_PATH):
-            zf.write(ADDON_OPTIONS_PATH, arcname="options.json")
+            zf.writestr("options.json", json.dumps(_options_without_secrets(load_options()), indent=2))
 
     return fpath, fname
 
@@ -1270,7 +1283,7 @@ def _push_options_to_supervisor(options_json_path: str):
         with open(options_json_path, "r") as f:
             opts = json.load(f)
         # Only forward keys defined in the add-on schema; drop internal-only keys
-        allowed = {"base_url", "ipp_host", "ipp_printer", "serial_prefix"}
+        allowed = {"base_url", "ipp_host", "ipp_printer", "serial_prefix", "anthropic_api_key"}
         payload = json.dumps({"options": {k: v for k, v in opts.items() if k in allowed}}).encode()
         req = _urlreq.Request(
             "http://supervisor/addons/self/options",
@@ -1355,9 +1368,17 @@ def restore_backup(zip_path: str) -> dict:
                     zf.extract(member, path=tmpdir)
                     try:
                         src = os.path.join(tmpdir, member)
-                        shutil.copyfile(src, ADDON_OPTIONS_PATH)
+                        # Backups never carry secrets, so keep the ones set now
+                        current = load_options()
+                        with open(src, "r") as f:
+                            restored = _options_without_secrets(json.load(f))
+                        for key in SECRET_OPTION_KEYS:
+                            if current.get(key):
+                                restored[key] = current[key]
+                        with open(ADDON_OPTIONS_PATH, "w") as f:
+                            json.dump(restored, f, indent=2)
                         # Also push to the HA Supervisor API so the config tab updates
-                        _push_options_to_supervisor(src)
+                        _push_options_to_supervisor(ADDON_OPTIONS_PATH)
                         summary["options"] = True
                     except Exception as e:
                         print("[RESTORE] options restore error", e)
@@ -1613,6 +1634,30 @@ def _log_port_notice():
     with Session(engine, expire_on_commit=False) as session:
         ensure_units_from_items(session)
         _log_unit_snapshot(session, label="startup")
+
+def normalize_barcode(v) -> str | None:
+    """Digits only; a 12-digit UPC-A becomes its 13-digit EAN form so scans and Woolworths codes match."""
+    digits = re.sub(r"\D", "", str(v or ""))
+    if len(digits) == 12:
+        digits = "0" + digits
+    return digits or None
+
+
+def parse_pack_size(text: str | None) -> tuple[float | None, str | None]:
+    """'750 g' -> (750, 'g'); '1kg' -> (1000, 'g'); '1.5L' -> (1500, 'ml'); '6 pack' -> (6, 'each')."""
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|litres?|liters?|pack|pk|each|ea)\b", (text or "").lower())
+    if not m:
+        return None, None
+    amount = float(m.group(1).replace(",", "."))
+    unit = m.group(2)
+    if unit == "kg":
+        return amount * 1000, "g"
+    if unit in ("l", "litre", "litres", "liter", "liters"):
+        return amount * 1000, "ml"
+    if unit in ("pack", "pk", "each", "ea"):
+        return amount, "each"
+    return amount, unit
+
 
 def _to_float(v) -> float | None:
     """Parse an optional number; blank or invalid gives None."""
@@ -3087,6 +3132,291 @@ def items_updated_at():
     return {"updated_at": _inventory_update_token()}
 
 
+# -----------------------------
+# Scan to add: barcode first, then Open Food Facts, then Claude reads the label
+# -----------------------------
+SCAN_MAX_BYTES = 25 * 1024 * 1024
+SCAN_PHOTO_RE = re.compile(r"^\d+_[0-9a-f]{32}\.jpg$")
+LABEL_MODEL = "claude-opus-5-5"
+LABEL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "Product name as a shopper would say it, without brand or pack size; empty if unreadable"},
+        "brand": {"type": "string", "description": "Brand, or empty"},
+        "pack_size": {"type": "number", "description": "Net amount in one pack in pack_unit, 0 if not shown"},
+        "pack_unit": {"type": "string", "enum": ["g", "ml", "each", ""]},
+        "barcode": {"type": "string", "description": "Digits printed under the barcode if legible, else empty"},
+    },
+    "required": ["name", "brand", "pack_size", "pack_unit", "barcode"],
+    "additionalProperties": False,
+}
+LABEL_PROMPT = (
+    "This is a photo of a grocery product from a home pantry in Australia. "
+    "Read the packaging and fill in the fields. Convert kg to g and L to ml. "
+    "Leave a field empty (or 0) rather than guessing when it is not visible."
+)
+
+
+class LabelReadError(Exception):
+    pass
+
+
+def _open_scan_image(data: bytes) -> Image.Image:
+    from PIL import ImageOps
+    img = Image.open(io.BytesIO(data))
+    img = ImageOps.exif_transpose(img)
+    return img.convert("RGB")
+
+
+def decode_retail_barcode(img: Image.Image) -> str | None:
+    """EAN/UPC only, so a PantrLytics QR label on a jar is ignored."""
+    try:
+        import zxingcpp
+    except ImportError:
+        print("[SCAN] zxing-cpp not installed; barcode decoding skipped")
+        return None
+    fmt = zxingcpp.BarcodeFormat
+    formats = (fmt.EAN13, fmt.EAN8, fmt.UPCA, fmt.UPCE)
+    # Full size first, then smaller copies: phone photos sometimes only decode once downscaled
+    for size in (None, 2000, 1200):
+        candidate = img
+        if size and max(img.size) > size:
+            candidate = img.copy()
+            candidate.thumbnail((size, size))
+        elif size:
+            continue
+        for r in zxingcpp.read_barcodes(candidate, formats=formats):
+            code = normalize_barcode(r.text)
+            if code:
+                return code
+    return None
+
+
+def lookup_open_food_facts(barcode: str) -> dict | None:
+    import urllib.request as _urlreq
+    url = (
+        f"https://world.openfoodfacts.org/api/v2/product/{barcode}.json"
+        "?fields=product_name,brands,quantity,product_quantity,product_quantity_unit"
+    )
+    req = _urlreq.Request(url, headers={"User-Agent": f"PantrLytics/{APP_VERSION}"})
+    try:
+        with _urlreq.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"[SCAN] Open Food Facts lookup failed: {e}")
+        return None
+    if data.get("status") != 1:
+        return None
+    product = data.get("product") or {}
+    name = (product.get("product_name") or "").strip()
+    if not name:
+        return None
+    pack_size, pack_unit = parse_pack_size(product.get("quantity"))
+    if pack_size is None:
+        qty = _to_float(product.get("product_quantity"))
+        unit = (product.get("product_quantity_unit") or "").lower()
+        if qty is not None and unit in ("g", "ml"):
+            pack_size, pack_unit = qty, unit
+    brand = (product.get("brands") or "").split(",")[0].strip()
+    return {"name": name, "brand": brand, "pack_size": pack_size, "pack_unit": pack_unit, "source": "Open Food Facts"}
+
+
+def read_label_with_claude(img: Image.Image) -> dict:
+    """Ask Claude to read the label. Raises LabelReadError with a short reason on any failure."""
+    import base64
+    import anthropic
+
+    key = _anthropic_api_key()
+    if not key:
+        raise LabelReadError("no Anthropic API key is set in the add-on configuration")
+    small = img.copy()
+    small.thumbnail((1568, 1568))
+    buf = io.BytesIO()
+    small.save(buf, format="JPEG", quality=85)
+    image_b64 = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+
+    client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=1)
+    try:
+        resp = client.beta.messages.create(
+            model=LABEL_MODEL,
+            max_tokens=8000,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": LABEL_SCHEMA}},
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
+                    {"type": "text", "text": LABEL_PROMPT},
+                ],
+            }],
+        )
+    except anthropic.AuthenticationError:
+        raise LabelReadError("the Anthropic API key was rejected")
+    except anthropic.RateLimitError:
+        raise LabelReadError("the label reader is busy, try again in a minute")
+    except anthropic.APIStatusError as e:
+        raise LabelReadError(f"the label reader returned an error ({e.status_code})")
+    except anthropic.APIConnectionError:
+        raise LabelReadError("the label reader could not be reached")
+    if resp.stop_reason in ("refusal", "max_tokens"):
+        raise LabelReadError("the label reader could not read this photo")
+    try:
+        text = next(b.text for b in resp.content if b.type == "text")
+        data = json.loads(text)
+    except Exception:
+        raise LabelReadError("the label reader gave an unreadable answer")
+    return {
+        "name": (data.get("name") or "").strip(),
+        "brand": (data.get("brand") or "").strip(),
+        "pack_size": _to_float(data.get("pack_size")) or None,
+        "pack_unit": data.get("pack_unit") or None,
+        "barcode": normalize_barcode(data.get("barcode")),
+        "source": "the label photo",
+    }
+
+
+def _save_scan_photo(img: Image.Image) -> str:
+    """Keep the scan photo so a new item can attach it; returns the file name used as a token."""
+    os.makedirs(PHOTOS_DIR, exist_ok=True)
+    name = f"{int(dt.datetime.utcnow().timestamp())}_{uuid.uuid4().hex}.jpg"
+    small = img.copy()
+    small.thumbnail((1600, 1600))
+    small.save(os.path.join(PHOTOS_DIR, name), format="JPEG", quality=80)
+    return name
+
+
+def _attach_scan_photo(session: Session, item: Item, token: str | None) -> None:
+    token = (token or "").strip()
+    if not token or os.path.basename(token) != token or not SCAN_PHOTO_RE.match(token):
+        return
+    path = os.path.join(PHOTOS_DIR, token)
+    if not os.path.isfile(path):
+        return
+    if session.exec(select(ItemPhoto).where(ItemPhoto.path == path)).first():
+        return
+    session.add(ItemPhoto(item_id=item.id, path=path))
+    if not item.photo_path:
+        item.photo_path = path
+        session.add(item)
+    session.commit()
+
+
+def _find_by_product_barcode(session: Session, barcode: str | None) -> Item | None:
+    if not barcode:
+        return None
+    items = session.exec(select(Item).where(Item.product_barcode == barcode)).all()
+    items.sort(key=lambda i: i.depleted_at is not None)
+    return items[0] if items else None
+
+
+def _scan_page(request: Request, **ctx):
+    return templates.TemplateResponse(
+        "scan.html",
+        {"request": request, "has_label_reader": bool(_anthropic_api_key()), "error": "", "match": None, **ctx},
+    )
+
+
+@app.get("/scan", name="scan_page", response_class=HTMLResponse)
+def scan_page(request: Request):
+    return _scan_page(request)
+
+
+@app.post("/scan", name="scan_submit", response_class=HTMLResponse)
+def scan_submit(request: Request, photo: UploadFile = File(None)):
+    # Plain def: decoding and the lookups block, so FastAPI runs this in its threadpool
+    data = photo.file.read() if photo else b""
+    if not data:
+        return _scan_page(request, error="No photo came through. Try again.")
+    if len(data) > SCAN_MAX_BYTES:
+        return _scan_page(request, error="That photo is too large. Try again.")
+    try:
+        img = _open_scan_image(data)
+    except Exception as e:
+        print(f"[SCAN] could not open photo: {e}")
+        return _scan_page(request, error="That photo could not be opened. Try again.")
+
+    barcode = decode_retail_barcode(img)
+    with Session(engine) as session:
+        match = _find_by_product_barcode(session, barcode)
+        if match:
+            return _scan_page(request, match=match, barcode=barcode)
+
+    info = lookup_open_food_facts(barcode) if barcode else None
+    notice = ""
+    if not info:
+        try:
+            info = read_label_with_claude(img)
+        except LabelReadError as e:
+            info = None
+            notice = f"Could not fill this in automatically: {e}."
+        if info:
+            barcode = barcode or info.get("barcode")
+            with Session(engine) as session:
+                match = _find_by_product_barcode(session, barcode)
+                if match:
+                    return _scan_page(request, match=match, barcode=barcode)
+            if not info.get("name"):
+                info = None
+                notice = "Could not read the product name from the photo."
+
+    form_values = {
+        "location": "Pantry",
+        "quantity": 1,
+        "unit": "pack",
+        "origin_date": dt.date.today().isoformat(),
+        "origin_date_label": "Purchased On",
+        "product_barcode": barcode or "",
+        "scan_photo": _save_scan_photo(img),
+    }
+    if info:
+        form_values.update({
+            "name": info["name"],
+            "pack_size": "%g" % info["pack_size"] if info.get("pack_size") else "",
+            "pack_unit": info.get("pack_unit") or "",
+            "notes": f"Brand: {info['brand']}" if info.get("brand") else "",
+        })
+        notice = f"Filled in from {info['source']}. Check the details, then save."
+    elif barcode:
+        notice = (notice + " " if notice else "") + f"Barcode {barcode} was read; add the details below."
+
+    with Session(engine) as session:
+        cats, bins, locations, use_withins = _choices(session)
+        unit_names = get_unit_names(session)
+        required_fields = get_required_field_keys(session)
+        audit_window_days = int(_get_setting(session, "audit_window_days", "30") or "30")
+        origin_date_labels = get_origin_date_label_names(session)
+    return templates.TemplateResponse(
+        "new.html",
+        {
+            "request": request,
+            "cats": cats,
+            "bins": bins,
+            "locations": locations,
+            "use_withins": use_withins,
+            "units": unit_names,
+            "required_fields": required_fields,
+            "audit_window_days": audit_window_days,
+            "origin_date_labels": origin_date_labels,
+            "form_values": form_values,
+            "error": "",
+            "scan_notice": notice.strip(),
+        },
+    )
+
+
+@app.post("/scan/restock/{item_id}", name="scan_restock")
+def scan_restock(request: Request, item_id: int, product_barcode: str = Form("")):
+    with Session(engine) as session:
+        item = session.get(Item, item_id)
+        if not item:
+            return RedirectResponse(url=str(request.url_for("scan_page")), status_code=303)
+        _restock(item, 1, product_barcode=product_barcode, purchased_on=dt.date.today().isoformat())
+        session.add(item)
+        session.commit()
+    return RedirectResponse(url=str(request.url_for("show_item", item_id=item_id)), status_code=303)
+
+
 @app.api_route("/new", methods=["GET", "POST"], response_class=HTMLResponse)
 async def new_item(
     request: Request,
@@ -3104,6 +3434,10 @@ async def new_item(
     use_within: str = Form(""),
     notes: str = Form(""),
     review_window_days: Optional[str] = Form(None),
+    pack_size: str = Form(""),
+    pack_unit: str = Form(""),
+    product_barcode: str = Form(""),
+    scan_photo: str = Form(""),
     photos: List[UploadFile] = File([]),
 ):
     # Pydantic v2 won't coerce empty string "" to None for Optional[int], so
@@ -3213,6 +3547,10 @@ async def new_item(
                     "use_within": use_within,
                     "notes": notes,
                     "review_window_days": review_window_days,
+                    "pack_size": pack_size,
+                    "pack_unit": pack_unit,
+                    "product_barcode": product_barcode,
+                    "scan_photo": scan_photo,
                 },
             },
             status_code=400,
@@ -3246,13 +3584,20 @@ async def new_item(
             photo_path=None,
             last_audit_date=dt.date.today().isoformat(),
             review_window_days=_rwd_new,
+            pack_size=_to_float(pack_size),
+            pack_unit=_norm(pack_unit) or None,
+            product_barcode=normalize_barcode(product_barcode),
         )
+        if item.pack_size is not None:
+            item.amount_left = item.pack_size * quantity
+            item.amount_checked_at = dt.date.today().isoformat()
         session.add(item)
         session.commit()
         session.refresh(item)
 
         item_id = item.id
 
+        _attach_scan_photo(session, item, scan_photo)
         _save_item_photos(session, item, photos)
 
     return RedirectResponse(
@@ -5374,7 +5719,7 @@ def api_items_expiring(days: int = 7, max_items: int = 25):
 def api_lookup_items(stockcode: str = "", product_barcode: str = "", name: str = ""):
     """Find items by Woolworths stockcode, product barcode or exact name (case-insensitive)."""
     stockcode = _norm(stockcode) or ""
-    product_barcode = _norm(product_barcode) or ""
+    product_barcode = normalize_barcode(product_barcode) or ""
     name = (_norm(name) or "").lower()
     if not (stockcode or product_barcode or name):
         return JSONResponse({"ok": False, "error": "stockcode, product_barcode or name is required"}, status_code=400)
@@ -5432,6 +5777,41 @@ def _stock_fields(item: Item) -> dict:
     }
 
 
+def _restock(item: Item, packs: int, pack_size=None, pack_unit=None, stockcode=None,
+             product_barcode=None, purchased_on=None) -> None:
+    """Add bought packs to an item; a depleted item comes back with just the new packs."""
+    pack_size = _to_float(pack_size)
+    if pack_size is not None:
+        item.pack_size = pack_size
+    if _norm(pack_unit):
+        item.pack_unit = _norm(pack_unit)
+    if _norm(stockcode):
+        item.stockcode = _norm(stockcode)
+    if normalize_barcode(product_barcode):
+        item.product_barcode = normalize_barcode(product_barcode)
+
+    if item.depleted_at:
+        item.depleted_at = None
+        item.depleted_reason = None
+        item.depleted_qty = None
+        item.quantity = packs
+        item.amount_left = None
+        item.amount_checked_at = None
+        base_amount = 0.0
+    else:
+        item.quantity = (item.quantity or 0) + packs
+        base_amount = item.amount_left
+    if item.pack_size is not None and base_amount is not None:
+        item.amount_left = base_amount + packs * item.pack_size
+        # A revived item is fully known now; otherwise keep the earlier anchor
+        if item.amount_checked_at is None:
+            item.amount_checked_at = dt.date.today().isoformat()
+    if _norm(purchased_on):
+        item.origin_date = _norm(purchased_on)
+        item.origin_date_label = "Purchased On"
+    item.last_audit_date = dt.date.today().isoformat()
+
+
 @app.post("/api/items/{item_id}/restock")
 async def api_restock_item(item_id: int, request: Request):
     """Add bought packs to an item; a depleted item comes back with just the new packs."""
@@ -5450,35 +5830,12 @@ async def api_restock_item(item_id: int, request: Request):
         item = session.get(Item, item_id)
         if not item:
             return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-        pack_size = _to_float(body.get("pack_size"))
-        if pack_size is not None:
-            item.pack_size = pack_size
-        if _norm(body.get("pack_unit")):
-            item.pack_unit = _norm(body.get("pack_unit"))
-        for key in ("stockcode", "product_barcode"):
-            if _norm(body.get(key)):
-                setattr(item, key, _norm(body.get(key)))
-
-        if item.depleted_at:
-            item.depleted_at = None
-            item.depleted_reason = None
-            item.depleted_qty = None
-            item.quantity = packs
-            item.amount_left = None
-            item.amount_checked_at = None
-            base_amount = 0.0
-        else:
-            item.quantity = (item.quantity or 0) + packs
-            base_amount = item.amount_left
-        if item.pack_size is not None and base_amount is not None:
-            item.amount_left = base_amount + packs * item.pack_size
-            # A revived item is fully known now; otherwise keep the earlier anchor
-            if item.amount_checked_at is None:
-                item.amount_checked_at = dt.date.today().isoformat()
-        if _norm(body.get("purchased_on")):
-            item.origin_date = _norm(body.get("purchased_on"))
-            item.origin_date_label = "Purchased On"
-        item.last_audit_date = dt.date.today().isoformat()
+        _restock(
+            item, packs,
+            pack_size=body.get("pack_size"), pack_unit=body.get("pack_unit"),
+            stockcode=body.get("stockcode"), product_barcode=body.get("product_barcode"),
+            purchased_on=body.get("purchased_on"),
+        )
         session.add(item)
         session.commit()
         session.refresh(item)
@@ -5540,7 +5897,7 @@ async def api_create_item(request: Request):
     if amount_left is None and pack_size is not None:
         amount_left = pack_size * quantity
     stockcode = _norm(body.get("stockcode", "")) or None
-    product_barcode = _norm(body.get("product_barcode", "")) or None
+    product_barcode = normalize_barcode(body.get("product_barcode"))
     review_window_days = None
     rwd_raw = body.get("review_window_days")
     if rwd_raw is not None:

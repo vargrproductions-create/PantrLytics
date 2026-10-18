@@ -1,5 +1,19 @@
 # PantrLytics Changelog
 
+## 2026.10.18.1
+
+### Features
+- **Scan to add.** A new Scan page (top menu and bottom bar) takes a photo of a product. The EAN or UPC barcode is read on the server, so it works on any phone without HTTPS; a PantrLytics QR label in the same photo is ignored.
+  - A barcode that matches an item offers **Add 1 pack**, which tops up its packs and amount left.
+  - A new barcode is looked up on Open Food Facts and opens New Item with the name, pack size, barcode, Pantry and today's purchase date filled in, and the photo attached.
+  - With no barcode, or one Open Food Facts doesn't know, Claude reads the label from the photo when an Anthropic API key is set in the add-on configuration (about a cent a photo). Without a key, or if reading fails, New Item opens with whatever was found.
+- New Item has pack size, pack unit and product barcode fields; amount left is set from them.
+- Product barcodes are stored as 13 digits, so a 12-digit UPC scan matches the same product.
+
+### Changes
+- Designer moved from the bottom bar into the More sheet to make room for Scan.
+- Backups no longer include the Anthropic API key, and a restore keeps the key already set.
+
 ## 2026.10.18
 
 ### Features

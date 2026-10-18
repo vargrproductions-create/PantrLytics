@@ -1,5 +1,5 @@
 name: PantrLytics
-version: 2026.10.18
+version: 2026.10.18.1
 url: https://github.com/Psychman52OS/PantrLytics
 changelog: https://github.com/Psychman52OS/PantrLytics/blob/main/CHANGELOG.md
 slug: pantrlytics
@@ -27,9 +27,11 @@ options:
   ipp_host: ""
   ipp_printer: ""
   serial_prefix: "USERconfigurable-"
+  anthropic_api_key: ""
 
 schema:
   base_url: str?
   ipp_host: str?
   ipp_printer: str?
   serial_prefix: str?
+  anthropic_api_key: password?
