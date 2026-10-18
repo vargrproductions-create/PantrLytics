@@ -1,4 +1,12 @@
 {% extends "layout.html" %}
+{% macro more_photo_button(label, hint) %}
+      <label class="file-input" style="margin-bottom:10px;">
+        <span class="file-btn">📷 {{ label }}</span>
+        <input class="input" type="file" name="more_photo" id="more-photo" accept="image/*" capture="environment">
+        <span class="file-name">{{ hint }}</span>
+      </label>
+      <p class="muted" id="more-status" hidden>Reading the photo…</p>
+{% endmacro %}
 {% block title %}New Item · Inventory & Labels{% endblock %}
 {% block content %}
 <section class="card">
@@ -13,6 +21,12 @@
 
   <form class="form-grid js-validate-required" method="post" action="{{ url_for('new_item') }}" enctype="multipart/form-data">
     <input type="hidden" name="scan_photo" value="{{ form_values.scan_photo or '' }}">
+    {% set front_first = form_values.scan_photo and has_label_reader and not form_values.name %}
+    {% if front_first %}
+    <div class="field field--full">
+      {{ more_photo_button("Photograph the front of the pack", "Fills in the name, size and best-before") }}
+    </div>
+    {% endif %}
     <div class="field">
       <label>Name {% if 'name' in required_fields %}(REQUIRED){% endif %}</label>
       <input class="input" type="text" name="name"
@@ -180,13 +194,8 @@
     </div>
 
     <div class="field field--full">
-      {% if form_values.scan_photo and has_label_reader %}
-      <label class="file-input" style="margin-bottom:10px;">
-        <span class="file-btn">📷 Read size or best-before from another photo</span>
-        <input class="input" type="file" name="more_photo" id="more-photo" accept="image/*" capture="environment">
-        <span class="file-name">Front of pack or the date</span>
-      </label>
-      <p class="muted" id="more-status" hidden>Reading the photo…</p>
+      {% if form_values.scan_photo and has_label_reader and not front_first %}
+      {{ more_photo_button("Read size or best-before from another photo", "Front of pack or the date") }}
       {% endif %}
       <label>Photos{% if form_values.scan_photo %} (the scan photo is attached already){% endif %}</label>
       <div class="photo-input-row">

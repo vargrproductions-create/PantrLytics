@@ -158,6 +158,20 @@ class ScanTests(unittest.TestCase):
         item_id = int(resp.headers["location"].rstrip("/").split("/")[-1])
         self.assertEqual(self.client.get(f"/api/items/{item_id}").json()["amount_left"], 250)
 
+    def test_unknown_product_asks_for_front_photo_first(self):
+        payload = {"name": "", "brand": "", "pack_size": 0, "pack_unit": "", "barcode": "",
+                   "best_before": "", "category": "", "container": ""}
+        fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: fake_claude_response(payload))))
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch.object(main, "lookup_open_food_facts", return_value=None), \
+             patch("anthropic.Anthropic", return_value=fake):
+            page = self._scan(ean_png("931999999999")).text
+        self.assertIn("is not in the product database. Take a photo of the front", page)
+        self.assertIn("Photograph the front of the pack", page)
+        self.assertNotIn("Read size or best-before from another photo", page)
+        self.assertLess(page.index("Photograph the front of the pack"), page.index('name="name"'))
+        self.assertEqual(page.count('name="more_photo"'), 1)
+
     def test_category_mapping(self):
         cats = ["Grains", "Staples", "Topping", "Frozen Meal"]
         self.assertEqual(main.category_from_off(["en:maple"], cats), "Topping")

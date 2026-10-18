@@ -46,7 +46,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.18.3"
+APP_VERSION = "2026.10.18.4"
 APP_INTERNAL_PORT = 8099
 
 
@@ -3233,6 +3233,7 @@ def lookup_open_food_facts(barcode: str) -> dict | None:
         print(f"[SCAN] Open Food Facts lookup failed: {e}")
         return None
     if data.get("status") != 1:
+        print(f"[SCAN] Open Food Facts has no record of {barcode}")
         return None
     product = data.get("product") or {}
     name = (product.get("product_name") or "").strip()
@@ -3400,6 +3401,7 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
     with Session(engine) as session:
         match = _find_by_product_barcode(session, barcode)
         if match:
+            print(f"[SCAN] result: barcode={barcode} matches item {match.id}")
             return _scan_page(request, match=match, barcode=barcode)
         categories = _choices(session)[0]
 
@@ -3413,6 +3415,7 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
             label = read_label_with_claude(img, categories)
         except LabelReadError as e:
             label = None
+            print(f"[SCAN] label reader failed: {e}")
             if not info:
                 notice = f"Could not fill this in automatically: {e}."
         if label and not barcode and label.get("barcode"):
@@ -3430,6 +3433,8 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
             info = label
         elif label:
             notice = "Could not read the product name from the photo."
+        if label:
+            print("[SCAN] label reader found: " + (", ".join(k for k in ("name", "pack_size", "category", "best_before", "container") if label.get(k)) or "nothing"))
 
     form_values = {
         "location": "Pantry",
@@ -3443,8 +3448,13 @@ def scan_submit(request: Request, photo: UploadFile = File(None)):
     if info:
         _merge_into_form(form_values, info, only_empty=False)
         notice = f"Filled in from {info['source']}. Check the details, then save."
+    elif barcode and _anthropic_api_key():
+        notice = f"Barcode {barcode} is not in the product database. Take a photo of the front of the pack to fill in the name and size."
     elif barcode:
         notice = (notice + " " if notice else "") + f"Barcode {barcode} was read; add the details below."
+    print(f"[SCAN] result: barcode={barcode or 'none'} database={'yes' if info and 'Open Food Facts' in info.get('source', '') else 'no'} "
+          f"name={'yes' if form_values.get('name') else 'no'} size={'yes' if form_values.get('pack_size') else 'no'} "
+          f"best_before={'yes' if form_values.get('use_by_date') else 'no'}")
     return _new_item_page(request, form_values, notice)
 
 
@@ -3536,6 +3546,7 @@ def _scan_more_sync(request: Request, form_values: dict, data: bytes):
     form_values["scan_photo"] = " ".join(filter(None, [str(form_values.get("scan_photo") or "").strip(), _save_scan_photo(img)]))
     filled = _merge_into_form(form_values, label, only_empty=True)
     notice = ("Added the " + ", ".join(filled) + " from the photo.") if filled else "Nothing new could be read from that photo."
+    print(f"[SCAN] extra photo filled: {', '.join(filled) or 'nothing'}")
     return _new_item_page(request, form_values, notice)
 
 

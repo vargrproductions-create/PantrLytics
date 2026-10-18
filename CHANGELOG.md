@@ -1,5 +1,11 @@
 # PantrLytics Changelog
 
+## 2026.10.18.4
+
+### Improvements
+- When a barcode is not in the product database and the photo shows no name, New Item says so and puts **Photograph the front of the pack** at the top of the page.
+- Each scan writes one log line: barcode read or not, whether the product database knew it, and what the label reader found, so a failed scan can be diagnosed from the app log.
+
 ## 2026.10.18.3
 
 ### Bug Fixes
