@@ -1,5 +1,12 @@
 # PantrLytics Changelog
 
+## 2026.10.19.1
+
+### Improvements
+- Use-by dates can be marked **estimated** (a shelf-life guess made when a shop is imported). The item page shows "(estimated)", and the API returns `use_by_estimated` on items, lookups and `/api/items/expiring`.
+- Scanning an item with an estimated date offers **Set the real date**: pick it from the pack, or photograph it when the label reader is set up. Changing the date on the edit page also clears the estimate.
+- New `POST /api/items/{id}/use-by`; `POST /api/items` and the restock API take `use_by_date` and `use_by_estimated`. A restock only sets the date on a used up or undated row, so the oldest pack's date stands.
+
 ## 2026.10.19
 
 ### Improvements

@@ -38,7 +38,7 @@
           Expires in {{ expiry_info.days }} day{% if expiry_info.days != 1 %}s{% endif %}
         {% endif %}
       </strong>
-      <span class="muted">Use-by {{ item.use_by_date or '—' }}</span>
+      <span class="muted">Use-by {{ item.use_by_date or '—' }}{% if item.use_by_estimated %} (estimated){% endif %}</span>
     </div>
   {% endif %}
 
@@ -57,7 +57,7 @@
         <div><span class="kv-label">Location</span><span class="kv-value">{{ item.location or "—" }}</span></div>
         <div><span class="kv-label">Condition</span><span class="kv-value">{{ item.condition or "—" }}</span></div>
         <div><span class="kv-label">{{ item.origin_date_label or "Cooked On" }}</span><span class="kv-value">{{ item.origin_date or "—" }}</span></div>
-        <div><span class="kv-label">Use-by</span><span class="kv-value">{{ item.use_by_date or "—" }}</span></div>
+        <div><span class="kv-label">Use-by</span><span class="kv-value">{{ item.use_by_date or "—" }}{% if item.use_by_estimated %} <span class="muted">(estimated)</span>{% endif %}</span></div>
         <div><span class="kv-label">Use Within</span><span class="kv-value">{{ item.use_within or "—" }}</span></div>
         <div>
           <span class="kv-label">Depleted</span>

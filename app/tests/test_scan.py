@@ -126,6 +126,42 @@ class ScanTests(unittest.TestCase):
             off.assert_not_called()
         self.assertIn(f"/scan/use/{item_id}", page)
 
+    def test_estimated_use_by_shows_and_is_replaced_from_scan(self):
+        item_id = self.client.post("/api/items", json={
+            "name": "Tinned coconut cream", "location": "Pantry", "quantity": 1, "unit": "pack",
+            "product_barcode": "9556041641005", "use_by_date": "2028-04-16", "use_by_estimated": True,
+        }).json()["item_id"]
+        data = self.client.get(f"/api/items/{item_id}").json()
+        self.assertTrue(data["use_by_estimated"])
+        self.assertIn("(estimated)", self.client.get(f"/item/{item_id}").text)
+        page = self._scan(ean_png("955604164100")).text
+        self.assertIn(f"/scan/date/{item_id}", page)
+        self.assertIn("is an estimate", page)
+        resp = self.client.post(f"/scan/date/{item_id}", data={"use_by_date": "2027-11-30"}, follow_redirects=False)
+        page = self.client.get(resp.headers["location"]).text
+        self.assertIn("set to 2027-11-30", page)
+        self.assertNotIn("is an estimate", page)
+        data = self.client.get(f"/api/items/{item_id}").json()
+        self.assertEqual((data["use_by_date"], data["use_by_estimated"]), ("2027-11-30", False))
+        # A blank submit keeps the date and says what is missing
+        self.assertIn("Pick the date", self.client.post(f"/scan/date/{item_id}", data={"use_by_date": ""}).text)
+
+    def test_use_by_api_and_restock_keep_the_oldest_date(self):
+        item_id = self.client.post("/api/items", json={"name": "Peanuts estimate", "quantity": 1, "unit": "pack"}).json()["item_id"]
+        r = self.client.post(f"/api/items/{item_id}/use-by", json={"use_by_date": "2027-02-16", "estimated": True}).json()
+        self.assertEqual((r["use_by_date"], r["use_by_estimated"]), ("2027-02-16", True))
+        self.assertEqual(self.client.post(f"/api/items/{item_id}/use-by", json={"use_by_date": "16/02/2027"}).status_code, 400)
+        # Active row: the older date stands
+        self.client.post(f"/api/items/{item_id}/restock", json={"packs": 1, "use_by_date": "2027-06-01", "use_by_estimated": True})
+        self.assertEqual(self.client.get(f"/api/items/{item_id}").json()["use_by_date"], "2027-02-16")
+        expiring = self.client.get("/api/items/expiring", params={"days": 10000}).json()
+        self.assertTrue(next(e for e in expiring if e["id"] == item_id)["use_by_estimated"])
+        # Used up row: the new packs bring their own date
+        self.client.post(f"/item/{item_id}/deplete", data={"reason": "Consumed/Used"})
+        self.client.post(f"/api/items/{item_id}/restock", json={"packs": 1, "use_by_date": "2027-06-01", "use_by_estimated": True})
+        data = self.client.get(f"/api/items/{item_id}").json()
+        self.assertEqual((data["use_by_date"], data["use_by_estimated"]), ("2027-06-01", True))
+
     def test_lookup_matches_upc_as_ean(self):
         self.client.post("/api/items", json={"name": "Imported oats", "product_barcode": "0036000291452"})
         matches = self.client.get("/api/items/lookup", params={"product_barcode": "036000291452"}).json()["matches"]

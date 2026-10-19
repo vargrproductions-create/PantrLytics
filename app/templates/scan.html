@@ -13,6 +13,8 @@
     {% if done == "used" %}
     <div class="alert-expiry ok">Used 1 of <strong>{{ match.name }}</strong>.
       {% if match.depleted_at %}That was the last one, so it is marked used up.{% else %}Left: {{ left }}.{% endif %}</div>
+    {% elif done == "dated" %}
+    <div class="alert-expiry ok">Best-before on <strong>{{ match.name }}</strong> set to {{ match.use_by_date }}.</div>
     {% elif done == "linked" %}
     <div class="alert-expiry ok">Barcode saved on <strong>{{ match.name }}</strong> ({{ left }}). Scans of it will find this row from now on.</div>
     {% else %}
@@ -32,6 +34,22 @@
       <a class="btn btn-secondary" href="{{ url_for('show_item', item_id=match.id) }}">Open item</a>
       <a class="btn btn-secondary" href="{{ url_for('scan_page') }}">Scan another</a>
     </div>
+    {% if match.use_by_estimated and not match.depleted_at %}
+    <form method="post" action="{{ url_for('scan_date', item_id=match.id) }}" enctype="multipart/form-data" style="margin-top:16px;">
+      <p class="muted">Best-before {{ match.use_by_date }} is an estimate. Set the real date from the pack.</p>
+      <div class="photo-input-row">
+        <input class="input" type="date" name="use_by_date" aria-label="Best-before date">
+        <button class="btn btn-secondary" type="submit">Set the real date</button>
+      </div>
+      {% if has_label_reader %}
+      <label class="file-input" style="margin-top:10px;">
+        <span class="file-btn">📷 Photograph the date</span>
+        <input class="input" type="file" name="photo" accept="image/*" capture="environment" onchange="this.form.submit()">
+        <span class="file-name">Reads the best-before for you</span>
+      </label>
+      {% endif %}
+    </form>
+    {% endif %}
   {% else %}
     <p class="muted">Take a photo of the barcode, close enough that it fills about a third of the picture. If there is no barcode, photograph the front of the pack{% if not has_label_reader %} (reading the label needs an Anthropic API key in the add-on configuration){% endif %}.</p>
     <form id="scan-form" method="post" action="{{ url_for('scan_submit') }}" enctype="multipart/form-data">

@@ -46,7 +46,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.19"
+APP_VERSION = "2026.10.19.1"
 APP_INTERNAL_PORT = 8099
 
 
@@ -277,6 +277,7 @@ class Item(SQLModel, table=True):
     amount_checked_at: Optional[str] = None  # date amount_left was last known true; restocks add on without moving it
     stockcode: Optional[str] = None  # Woolworths stockcode
     product_barcode: Optional[str] = None  # manufacturer EAN/UPC
+    use_by_estimated: Optional[bool] = None  # use_by_date is a shelf-life guess, not read off the pack
 
     created_at: str = Field(
         default_factory=lambda: dt.datetime.utcnow().isoformat()
@@ -467,6 +468,7 @@ EXPORTABLE_FIELDS = [
     {"key": "amount_checked_at", "label": "Amount checked at"},
     {"key": "stockcode", "label": "Stockcode"},
     {"key": "product_barcode", "label": "Product barcode"},
+    {"key": "use_by_estimated", "label": "Use-by estimated"},
     {"key": "created_at", "label": "Created at"},
 ]
 EXPORTABLE_FIELD_KEYS = [f["key"] for f in EXPORTABLE_FIELDS]
@@ -510,6 +512,7 @@ def init_db():
         ensure_column(conn, "item", "amount_checked_at", "VARCHAR")
         ensure_column(conn, "item", "stockcode", "VARCHAR")
         ensure_column(conn, "item", "product_barcode", "VARCHAR")
+        ensure_column(conn, "item", "use_by_estimated", "BOOLEAN")
 
         # ensure created_at on supporting tables
         for tbl in ("category", "bin", "location", "usewithin"):
@@ -2723,6 +2726,7 @@ async def import_csv(request: Request, file: UploadFile = File(...)):
                 amount_checked_at=_val(row, "amount_checked_at"),
                 stockcode=_val(row, "stockcode"),
                 product_barcode=_val(row, "product_barcode"),
+                use_by_estimated=(_val(row, "use_by_estimated") or "").strip().lower() in ("1", "true", "yes") or None,
                 created_at=_val(row, "created_at") or dt.datetime.utcnow().isoformat(),
             )
             session.add(item)
@@ -3588,6 +3592,40 @@ def scan_use(request: Request, item_id: int):
             session.add(item)
             session.commit()
     return RedirectResponse(url=str(request.url_for("scan_page")) + f"?item={item_id}&done=used", status_code=303)
+
+
+@app.post("/scan/date/{item_id}", name="scan_date")
+def scan_date(request: Request, item_id: int, use_by_date: str = Form(""), photo: UploadFile = File(None)):
+    # Plain def: the label reader blocks, so FastAPI runs this in its threadpool
+    use_by = _norm(use_by_date) or ""
+    data = photo.file.read() if photo else b""
+    error = ""
+    if not use_by and data:
+        try:
+            with Session(engine) as session:
+                categories = _choices(session)[0]
+            use_by = (read_label_with_claude(_open_scan_image(data), categories) or {}).get("best_before") or ""
+            if not use_by:
+                error = "Could not read a date in that photo. Type it in instead."
+        except LabelReadError as e:
+            error = f"Could not read the date: {e}. Type it in instead."
+        except Exception as e:
+            print(f"[SCAN] date photo failed: {e}")
+            error = "That photo could not be opened. Type the date in instead."
+    if use_by and _parse_date(use_by) is None:
+        use_by, error = "", "That date was not recognised. Use the date picker."
+    with Session(engine) as session:
+        item = session.get(Item, item_id)
+        if not item:
+            return RedirectResponse(url=str(request.url_for("scan_page")), status_code=303)
+        if use_by:
+            item.use_by_date = use_by
+            item.use_by_estimated = None
+            session.add(item)
+            session.commit()
+            session.refresh(item)
+            return RedirectResponse(url=str(request.url_for("scan_page")) + f"?item={item_id}&done=dated", status_code=303)
+    return _scan_page(request, match=item, barcode=item.product_barcode, error=error or "Pick the date from the pack first.")
 
 
 @app.post("/scan/link/{item_id}", name="scan_link")
@@ -5082,6 +5120,8 @@ async def edit_item_submit(
         item.condition = condition or None
         item.origin_date = origin_date or None
         item.origin_date_label = origin_date_label or "Cooked On"
+        if (use_by_date or None) != item.use_by_date:
+            item.use_by_estimated = None
         item.use_by_date = use_by_date or None
         item.use_within = use_within or None
         item.notes = notes or None
@@ -5910,6 +5950,7 @@ def api_items_expiring(days: int = 7, max_items: int = 25):
                 "category": it.category,
                 "location": it.location,
                 "use_by_date": it.use_by_date,
+                "use_by_estimated": bool(it.use_by_estimated),
                 "days_remaining": days_remaining,
                 "quantity": it.quantity,
             })
@@ -5976,6 +6017,7 @@ def _stock_fields(item: Item) -> dict:
         "amount_checked_at": item.amount_checked_at,
         "stockcode": item.stockcode,
         "product_barcode": item.product_barcode,
+        "use_by_estimated": bool(item.use_by_estimated),
     }
 
 
@@ -6014,6 +6056,29 @@ def _restock(item: Item, packs: int, pack_size=None, pack_unit=None, stockcode=N
     item.last_audit_date = dt.date.today().isoformat()
 
 
+@app.post("/api/items/{item_id}/use-by")
+async def api_set_use_by(item_id: int, request: Request):
+    """Set a row's use-by date; estimated is true for a shelf-life guess, false for a date read off the pack."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+    use_by = _norm(body.get("use_by_date") or "")
+    if use_by and _parse_date(use_by) is None:
+        return JSONResponse({"ok": False, "error": "use_by_date must be YYYY-MM-DD"}, status_code=400)
+    with Session(engine) as session:
+        item = session.get(Item, item_id)
+        if not item:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        item.use_by_date = use_by or None
+        item.use_by_estimated = (bool(body.get("estimated")) and bool(use_by)) or None
+        session.add(item)
+        session.commit()
+        result = {"ok": True, "item_id": item.id, "use_by_date": item.use_by_date,
+                  "use_by_estimated": bool(item.use_by_estimated)}
+    return JSONResponse(result)
+
+
 @app.post("/api/items/{item_id}/restock")
 async def api_restock_item(item_id: int, request: Request):
     """Add bought packs to an item; a depleted item comes back with just the new packs."""
@@ -6032,6 +6097,11 @@ async def api_restock_item(item_id: int, request: Request):
         item = session.get(Item, item_id)
         if not item:
             return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        # The oldest pack's date stands, so a new date only lands on a used up or undated row
+        new_use_by = _norm(body.get("use_by_date") or "")
+        if new_use_by and (item.depleted_at or not item.use_by_date):
+            item.use_by_date = new_use_by
+            item.use_by_estimated = bool(body.get("use_by_estimated")) or None
         _restock(
             item, packs,
             pack_size=body.get("pack_size"), pack_unit=body.get("pack_unit"),
@@ -6153,6 +6223,7 @@ async def api_create_item(request: Request):
             origin_date=origin_date or None,
             origin_date_label=origin_date_label or "Cooked On",
             use_by_date=use_by_date or None,
+            use_by_estimated=(bool(body.get("use_by_estimated")) and bool(use_by_date)) or None,
             use_within=use_within or None,
             notes=notes or None,
             barcode=serial,
