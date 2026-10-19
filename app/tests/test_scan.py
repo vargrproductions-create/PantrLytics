@@ -84,6 +84,48 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(data["quantity"], 2)
         self.assertEqual(data["amount_left"], 1000)
 
+    def test_used_one_pack_counts_down_then_marks_used_up(self):
+        item_id = self.client.post("/api/items", json={
+            "name": "Tinned chickpeas", "location": "Pantry", "quantity": 2, "unit": "pack",
+            "pack_size": 420, "pack_unit": "g", "product_barcode": "9339687387182",
+        }).json()["item_id"]
+        page = self._scan(ean_png("933968738718")).text
+        self.assertIn(f"/scan/use/{item_id}", page)
+        self.assertLess(page.index("Used 1 pack"), page.index("Add 1 pack"))
+        resp = self.client.post(f"/scan/use/{item_id}", follow_redirects=False)
+        self.assertEqual(resp.status_code, 303)
+        page = self.client.get(resp.headers["location"]).text
+        self.assertIn("Left: 1 pack, 420 g", page)
+        self.assertNotIn(f"/scan/use/{item_id}", page)
+        data = self.client.get(f"/api/items/{item_id}").json()
+        self.assertEqual((data["quantity"], data["amount_left"], data["depleted_at"]), (1, 420, None))
+        page = self.client.get(self.client.post(f"/scan/use/{item_id}", follow_redirects=False).headers["location"]).text
+        self.assertIn("marked used up", page)
+        data = self.client.get(f"/api/items/{item_id}").json()
+        self.assertEqual((data["quantity"], data["amount_left"]), (0, 0))
+        self.assertIsNotNone(data["depleted_at"])
+        # A used up row is left alone by another tap, and a restock brings it back
+        self.client.post(f"/scan/use/{item_id}")
+        self.assertEqual(self.client.get(f"/api/items/{item_id}").json()["quantity"], 0)
+        self.client.post(f"/scan/restock/{item_id}", data={"product_barcode": "9339687387182"})
+        data = self.client.get(f"/api/items/{item_id}").json()
+        self.assertEqual((data["quantity"], data["amount_left"], data["depleted_at"]), (1, 420, None))
+
+    def test_unknown_barcode_can_link_to_existing_row(self):
+        item_id = self.client.post("/api/items", json={"name": "Brown rice no barcode", "location": "Pantry"}).json()["item_id"]
+        with patch.object(main, "lookup_open_food_facts", return_value=None):
+            page = self._scan(ean_png("931234567890")).text
+        self.assertIn("Already in the pantry?", page)
+        self.assertIn(f"/scan/link/{item_id}", page)
+        resp = self.client.post(f"/scan/link/{item_id}", data={"product_barcode": "9312345678907"}, follow_redirects=False)
+        page = self.client.get(resp.headers["location"]).text
+        self.assertIn("Barcode saved on", page)
+        self.assertEqual(self.client.get(f"/api/items/{item_id}").json()["product_barcode"], "9312345678907")
+        with patch.object(main, "lookup_open_food_facts") as off:
+            page = self._scan(ean_png("931234567890")).text
+            off.assert_not_called()
+        self.assertIn(f"/scan/use/{item_id}", page)
+
     def test_lookup_matches_upc_as_ean(self):
         self.client.post("/api/items", json={"name": "Imported oats", "product_barcode": "0036000291452"})
         matches = self.client.get("/api/items/lookup", params={"product_barcode": "036000291452"}).json()["matches"]

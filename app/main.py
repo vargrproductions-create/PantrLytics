@@ -46,7 +46,7 @@ except Exception as e:
 # Timezone / datetime formatting helper
 # -------------------------------------------------
 LOCAL_TZ = tzlocal.get_localzone()
-APP_VERSION = "2026.10.18.4"
+APP_VERSION = "2026.10.19"
 APP_INTERNAL_PORT = 8099
 
 
@@ -3379,7 +3379,13 @@ def _scan_page(request: Request, **ctx):
 
 
 @app.get("/scan", name="scan_page", response_class=HTMLResponse)
-def scan_page(request: Request):
+def scan_page(request: Request, item: int = 0, done: str = ""):
+    # After a use or link, show the row again so the next tap or scan is one step
+    if item:
+        with Session(engine) as session:
+            match = session.get(Item, item)
+        if match:
+            return _scan_page(request, match=match, barcode=match.product_barcode, done=done)
     return _scan_page(request)
 
 
@@ -3497,6 +3503,13 @@ def _new_item_page(request: Request, form_values: dict, notice: str):
         required_fields = get_required_field_keys(session)
         audit_window_days = int(_get_setting(session, "audit_window_days", "30") or "30")
         origin_date_labels = get_origin_date_label_names(session)
+        # A scanned barcode on no row yet may belong to a row added before barcodes, so offer those first
+        link_candidates = []
+        if form_values.get("product_barcode"):
+            link_candidates = sorted(
+                session.exec(select(Item).where(Item.depleted_at == None, Item.product_barcode == None)).all(),  # noqa: E711
+                key=lambda i: ((i.location or "") != "Pantry", (i.name or "").lower()),
+            )
     return templates.TemplateResponse(
         "new.html",
         {
@@ -3512,6 +3525,7 @@ def _new_item_page(request: Request, form_values: dict, notice: str):
             "form_values": form_values,
             "error": "",
             "scan_notice": notice.strip(),
+            "link_candidates": link_candidates,
             "has_label_reader": bool(_anthropic_api_key()),
         },
     )
@@ -3548,6 +3562,45 @@ def _scan_more_sync(request: Request, form_values: dict, data: bytes):
     notice = ("Added the " + ", ".join(filled) + " from the photo.") if filled else "Nothing new could be read from that photo."
     print(f"[SCAN] extra photo filled: {', '.join(filled) or 'nothing'}")
     return _new_item_page(request, form_values, notice)
+
+
+def _use_one_pack(item: Item) -> None:
+    """Take one pack off a row; the last one marks it used up, so it shows as running low."""
+    item.quantity = max(0, (item.quantity or 0) - 1)
+    if item.amount_left is not None:
+        item.amount_left = max(0.0, item.amount_left - (item.pack_size or 0)) if item.quantity else 0.0
+        item.amount_checked_at = dt.date.today().isoformat()
+    if item.quantity == 0:
+        item.depleted_at = dt.datetime.utcnow().isoformat()
+        item.depleted_reason = "Consumed/Used"
+        item.depleted_qty = 1
+        item.last_audit_date = dt.date.today().isoformat()
+
+
+@app.post("/scan/use/{item_id}", name="scan_use")
+def scan_use(request: Request, item_id: int):
+    with Session(engine) as session:
+        item = session.get(Item, item_id)
+        if not item:
+            return RedirectResponse(url=str(request.url_for("scan_page")), status_code=303)
+        if not item.depleted_at:
+            _use_one_pack(item)
+            session.add(item)
+            session.commit()
+    return RedirectResponse(url=str(request.url_for("scan_page")) + f"?item={item_id}&done=used", status_code=303)
+
+
+@app.post("/scan/link/{item_id}", name="scan_link")
+def scan_link(request: Request, item_id: int, product_barcode: str = Form("")):
+    barcode = normalize_barcode(product_barcode)
+    with Session(engine) as session:
+        item = session.get(Item, item_id)
+        if not item or not barcode:
+            return RedirectResponse(url=str(request.url_for("scan_page")), status_code=303)
+        item.product_barcode = barcode
+        session.add(item)
+        session.commit()
+    return RedirectResponse(url=str(request.url_for("scan_page")) + f"?item={item_id}&done=linked", status_code=303)
 
 
 @app.post("/scan/restock/{item_id}", name="scan_restock")

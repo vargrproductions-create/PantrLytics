@@ -9,12 +9,25 @@
   {% endif %}
 
   {% if match %}
+    {% set left %}{{ match.quantity }} {{ match.unit or "" }}{% if match.amount_left is not none and match.pack_unit %}, {{ match.amount_left|round|int }} {{ match.pack_unit }}{% endif %}{% endset %}
+    {% if done == "used" %}
+    <div class="alert-expiry ok">Used 1 of <strong>{{ match.name }}</strong>.
+      {% if match.depleted_at %}That was the last one, so it is marked used up.{% else %}Left: {{ left }}.{% endif %}</div>
+    {% elif done == "linked" %}
+    <div class="alert-expiry ok">Barcode saved on <strong>{{ match.name }}</strong> ({{ left }}). Scans of it will find this row from now on.</div>
+    {% else %}
     <div class="alert-expiry ok">Already in PantrLytics: <strong>{{ match.name }}</strong>
-      ({{ match.quantity }} {{ match.unit or "" }}{% if match.depleted_at %}, used up{% endif %}).</div>
+      ({{ left }}{% if match.depleted_at %}, used up{% endif %}).</div>
+    {% endif %}
     <div class="actions" style="margin-top:12px;">
+      {% if not match.depleted_at and done != "used" %}
+      <form method="post" action="{{ url_for('scan_use', item_id=match.id) }}" style="display:inline;">
+        <button class="btn" type="submit">Used 1 pack</button>
+      </form>
+      {% endif %}
       <form method="post" action="{{ url_for('scan_restock', item_id=match.id) }}" style="display:inline;">
         <input type="hidden" name="product_barcode" value="{{ barcode or '' }}">
-        <button class="btn" type="submit">Add 1 pack</button>
+        <button class="btn{% if not match.depleted_at %} btn-secondary{% endif %}" type="submit">Add 1 pack</button>
       </form>
       <a class="btn btn-secondary" href="{{ url_for('show_item', item_id=match.id) }}">Open item</a>
       <a class="btn btn-secondary" href="{{ url_for('scan_page') }}">Scan another</a>

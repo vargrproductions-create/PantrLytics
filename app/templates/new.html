@@ -18,6 +18,30 @@
   {% if scan_notice %}
     <div class="alert-expiry ok">{{ scan_notice }}</div>
   {% endif %}
+  {% if link_candidates %}
+  <form class="form-grid" method="post" id="link-form" action="" style="margin-bottom:16px;">
+    <input type="hidden" name="product_barcode" value="{{ form_values.product_barcode }}">
+    <div class="field field--full">
+      <label for="link-item">Already in the pantry? Pick it so this barcode finds it next time</label>
+      <select class="input" id="link-item" required>
+        <option value="">Choose the existing item</option>
+        {% for it in link_candidates %}
+        <option value="{{ url_for('scan_link', item_id=it.id) }}">{{ it.name }}{% if it.location %} · {{ it.location }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field field--full">
+      <button class="btn btn-secondary" type="submit">Use the existing item</button>
+    </div>
+  </form>
+  <script>
+  document.getElementById('link-form').addEventListener('submit', function(e){
+    var url = document.getElementById('link-item').value;
+    if (!url) { e.preventDefault(); return; }
+    this.action = url;
+  });
+  </script>
+  {% endif %}
 
   <form class="form-grid js-validate-required" method="post" action="{{ url_for('new_item') }}" enctype="multipart/form-data">
     <input type="hidden" name="scan_photo" value="{{ form_values.scan_photo or '' }}">

@@ -1,5 +1,11 @@
 # PantrLytics Changelog
 
+## 2026.10.19
+
+### Improvements
+- Scanning something already in PantrLytics now offers **Used 1 pack** first: it takes one pack and its weight off the row, and the last one marks the row used up (Consumed/Used) so it shows as running low. **Add 1 pack** moves to second place.
+- When a scanned barcode is on no row, New Item offers **Already in the pantry?**: pick an existing item without a barcode and the barcode is saved on it, so later scans find it instead of making a duplicate.
+
 ## 2026.10.18.4
 
 ### Improvements
